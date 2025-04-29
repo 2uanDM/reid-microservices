@@ -17,7 +17,7 @@ class YoloModel:
             self.convert_onnx(model_path)
             model_path = model_path.replace(".pt", ".onnx")
 
-        self.model = YOLO(model=model_path, task="detect", verbose=True)
+        self.model = YOLO(model=model_path, task="detect")
 
         if model_path.endswith(".pt") and not ensure_onnx:
             self.model = self.model.to("cpu")

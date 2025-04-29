@@ -6,8 +6,8 @@ import uuid
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from kafka import KafkaProducer
 
+from kafka import KafkaProducer
 from src.yolo import YoloModel
 
 load_dotenv()
@@ -19,8 +19,9 @@ class EdgeDeviceRunner:
         device_id: str,
         source_url: str,
         reid_topic: str,
-        model_path: str = "weights/best.pt",
-        kafka_server_uri: str = "localhost:29092",
+        kafka_server_uri: str,
+        ensure_onnx: bool = True,
+        model_path: str = "weights/best.onnx",
     ):
         self.device_id = device_id
         self.source_url = source_url
@@ -32,15 +33,15 @@ class EdgeDeviceRunner:
         self.init_kafka()
 
         # Init Yolo model
-        self.model = YoloModel(model_path=model_path, ensure_onnx=True)
+        self.model = YoloModel(model_path=model_path, ensure_onnx=ensure_onnx)
 
     def init_kafka(self):
         # For binary serialization
         self.producer = KafkaProducer(
             client_id=self.device_id,
             bootstrap_servers=self.kafka_server_uri,
+            key_serializer=lambda x: x.encode("utf-8"),
             acks="all",
-            value_serializer=lambda x: x,
         )
 
     def produce(
@@ -67,11 +68,11 @@ class EdgeDeviceRunner:
             )
 
             # Send binary message
-            self.producer.send(self.reid_topic, value=message)
+            self.producer.send(self.reid_topic, value=message, key=self.device_id)
         else:
             # Send metadata only
             message = len(metadata_bytes).to_bytes(4, byteorder="big") + metadata_bytes
-            self.producer.send(self.reid_topic, value=message)
+            self.producer.send(self.reid_topic, value=message, key=self.device_id)
 
     def read_source(self) -> cv2.VideoCapture:
         if self.source_url.startswith("rtsp://") or self.source_url.startswith(
@@ -169,6 +170,9 @@ class EdgeDeviceRunner:
         avg_fps = frame_count / total_time if total_time > 0 else 0
         print(f"Completed in {total_time:.2f}s | Avg FPS: {avg_fps:.2f}")
 
+        # Shutdown Kafka producer
+        self.producer.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -184,14 +188,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reid_topic",
         type=str,
-        default="reid_topic",
+        default="reid_input",
         help="Kafka topic for re-identification",
     )
     parser.add_argument(
         "--kafka_server_uri",
         type=str,
-        default="localhost:29092",
+        default="localhost:9092",
         help="Kafka server URI",
+    )
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default="weights/best.onnx",
+        help="Path to the YOLO model",
+    )
+    parser.add_argument(
+        "--ensure_onnx",
+        action="store_true",
+        help="Ensure the model is in ONNX format",
     )
     args = parser.parse_args()
 
@@ -200,5 +215,7 @@ if __name__ == "__main__":
         source_url=args.source,
         reid_topic=args.reid_topic,
         kafka_server_uri=args.kafka_server_uri,
+        ensure_onnx=args.ensure_onnx,
+        model_path=args.model_path,
     )
     runner.run()
