@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# 
 # chmod +x gen_kafka_compose.py
 # ./gen_kafka_compose.py -b 5 -o docker-compose.yaml
 
