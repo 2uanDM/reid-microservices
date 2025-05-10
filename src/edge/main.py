@@ -1,10 +1,13 @@
 import argparse  # Read arguments from command line
-import json
+import io as python_io
+import os
 import time
 import uuid
 
 import cv2
 import numpy as np
+from avro import io, schema
+from avro.io import DatumWriter
 from dotenv import load_dotenv
 
 from kafka import KafkaProducer
@@ -29,20 +32,64 @@ class EdgeDeviceRunner:
         self.reid_topic = reid_topic
         self.kafka_server_uri = kafka_server_uri
 
+        # Load Avro schema - try multiple possible locations
+        self.avro_schema = self.load_schema()
+
         # Init Kafka producer
         self.init_kafka()
 
         # Init Yolo model
         self.model = YoloModel(model_path=model_path, ensure_onnx=ensure_onnx)
 
+    def load_schema(self):
+        possible_paths = [
+            "schema.avsc",  # Current directory
+            "src/edge/schema.avsc",  # From project root
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "schema.avsc"
+            ),  # Same directory as this file
+        ]
+
+        for path in possible_paths:
+            try:
+                with open(path, "r") as f:
+                    schema_str = f.read()
+                    print(f"Successfully loaded schema from {path}")
+                    try:
+                        return schema.parse(schema_str)
+                    except Exception as e:
+                        print(f"Error parsing schema: {e}")
+                        print(f"Schema content: {schema_str}")
+                        raise
+            except FileNotFoundError:
+                continue
+
+        # If we get here, schema wasn't found
+        raise FileNotFoundError(
+            f"Could not find schema.avsc in any of: {possible_paths}"
+        )
+
     def init_kafka(self):
-        # For binary serialization
+        # For Avro serialization
         self.producer = KafkaProducer(
             client_id=self.device_id,
             bootstrap_servers=self.kafka_server_uri,
             key_serializer=lambda x: x.encode("utf-8"),
+            value_serializer=self.serialize_message,
             acks="all",
         )
+
+    def serialize_message(self, message):
+        try:
+            writer = DatumWriter(self.avro_schema)
+            bytes_writer = python_io.BytesIO()
+            encoder = io.BinaryEncoder(bytes_writer)
+            writer.write(message, encoder)
+            return bytes_writer.getvalue()
+        except Exception as e:
+            print(f"Error serializing message: {e}")
+            print(f"Message: {message}")
+            raise
 
     def produce(
         self,
@@ -52,27 +99,33 @@ class EdgeDeviceRunner:
         if payload is None:
             payload = {}
 
-        # Convert metadata to bytes
-        metadata_bytes = json.dumps(payload).encode("utf-8")
+        # Format detection results to match our schema
+        results = []
+        for detection in payload.get("result", []):
+            # Ensure detections match our schema format
+            formatted_detection = {
+                "bbox": detection.get("bbox", [0.0, 0.0, 0.0, 0.0]),
+                "confidence": float(detection.get("confidence", 0.0)),
+                "class_id": int(detection.get("class_id", 0)),
+            }
+            results.append(formatted_detection)
+
+        # Prepare the message according to Avro schema
+        message = {
+            "device_id": self.device_id,
+            "frame_number": int(payload.get("frame_number", 0)),
+            "result": results,
+            "created_at": int(payload.get("created_at", time.time_ns())),
+            "image_data": None,
+        }
 
         if frame is not None and frame.size > 0:
             # Compress image to JPEG bytes
             _, img_bytes = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            img_bytes = img_bytes.tobytes()
+            message["image_data"] = img_bytes.tobytes()
 
-            # Format: [4-byte metadata length][metadata][image bytes]
-            message = (
-                len(metadata_bytes).to_bytes(4, byteorder="big")
-                + metadata_bytes
-                + img_bytes
-            )
-
-            # Send binary message
-            self.producer.send(self.reid_topic, value=message, key=self.device_id)
-        else:
-            # Send metadata only
-            message = len(metadata_bytes).to_bytes(4, byteorder="big") + metadata_bytes
-            self.producer.send(self.reid_topic, value=message, key=self.device_id)
+        # Send message using Avro serialization
+        self.producer.send(self.reid_topic, value=message, key=self.device_id)
 
     def read_source(self) -> cv2.VideoCapture:
         if self.source_url.startswith("rtsp://") or self.source_url.startswith(

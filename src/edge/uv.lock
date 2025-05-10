@@ -13,6 +13,12 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "avro-python3"
+version = "1.10.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/97/7a6970380ca8db9139a3cc0b0e3e0dd3e4bc584fb3644e1d06e71e1a55f0/avro-python3-1.10.2.tar.gz", hash = "sha256:3b63f24e6b04368c3e4a6f923f484be0230d821aad65ac36108edbff29e9aaab", size = 38701 }
+
+[[package]]
 name = "certifi"
 version = "2025.1.31"
 source = { registry = "https://pypi.org/simple" }
@@ -192,6 +198,7 @@ name = "edge"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "avro-python3" },
     { name = "kafka-python" },
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -209,6 +216,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "avro-python3", specifier = ">=1.10.2" },
     { name = "kafka-python", specifier = ">=2.2.0" },
     { name = "onnx", specifier = ">=1.17.0" },
     { name = "onnxruntime", specifier = ">=1.21.1" },
