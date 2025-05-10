@@ -2,6 +2,10 @@ lint: ## Run linters
 	@echo "🚀 Running Ruff lint"
 	@ruff check . --fix
 
+pre-commit: ## Export .env.example file
+	@echo "🚀 Exporting .env.example file"
+	@awk -F= '/=/{print $$1"="}' .env > .env.example
+
 dev:
 	@echo "🚀 Running the development server"
 	@cd app && python main.py
