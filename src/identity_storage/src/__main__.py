@@ -3,7 +3,8 @@ from typing import List, Optional
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Path
+from fastapi import Depends, FastAPI, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .identity_storage import IdentityStorage
@@ -30,7 +31,6 @@ class SearchRequest(BaseModel):
 class SearchResult(BaseModel):
     id: int
     score: float
-    person: Person
 
 
 # FastAPI Application
@@ -72,12 +72,15 @@ async def insert_person(
     storage: IdentityStorage = Depends(get_identity_storage),
 ):
     """Insert or update a person in the storage"""
-    result = await storage.insert(
-        person_id=person_id,
-        features=request.features,
-        detect_conf=request.detect_conf,
-    )
-    return result
+    try:
+        result = await storage.insert(
+            person_id=person_id,
+            features=request.features,
+            detect_conf=request.detect_conf,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/persons/{person_id}", response_model=Optional[Person])
@@ -86,10 +89,13 @@ async def get_person(
     storage: IdentityStorage = Depends(get_identity_storage),
 ):
     """Get a person by ID"""
-    person = await storage.get(person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail=f"Person {person_id} not found")
-    return person
+    try:
+        person = await storage.get(person_id)
+        if person is None:
+            raise HTTPException(status_code=404, detail=f"Person {person_id} not found")
+        return person
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/persons/{person_id}", response_model=bool)
@@ -98,10 +104,13 @@ async def delete_person(
     storage: IdentityStorage = Depends(get_identity_storage),
 ):
     """Delete a person by ID"""
-    result = await storage.delete(person_id)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Person {person_id} not found")
-    return result
+    try:
+        result = await storage.delete(person_id)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Person {person_id} not found")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/search", response_model=List[SearchResult])
@@ -110,18 +119,40 @@ async def search_persons(
     storage: IdentityStorage = Depends(get_identity_storage),
 ):
     """Search for similar persons using cosine similarity"""
-    results = await storage.search(
-        embedding=request.embedding,
-        limit=request.limit,
-        threshold=request.threshold,
-    )
-    return results
+    try:
+        results = await storage.search(
+            embedding=request.embedding,
+            limit=request.limit,
+            threshold=request.threshold,
+        )
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/empty", response_model=bool)
+async def empty(storage: IdentityStorage = Depends(get_identity_storage)):
+    """Empty the collection"""
+    try:
+        await storage.empty()
+        return True
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "ok"}
+
+
+# Custom exception handler for HTTPException
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "message": exc.detail},
+    )
 
 
 if __name__ == "__main__":
