@@ -231,7 +231,13 @@ class IdentityStorage:
         # Format results
         results = []
         for hit in search_result:
-            person = await self.get(hit.id)
-            results.append({"id": hit.id, "score": hit.score, "person": person})
+            results.append({"id": hit.id, "score": hit.score})
 
         return results
+
+    async def empty(self):
+        """
+        Empty the collection
+        """
+        await self.client.delete_collection(collection_name=self.collection_name)
+        await self.init_collection()
