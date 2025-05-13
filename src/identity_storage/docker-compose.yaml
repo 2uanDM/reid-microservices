@@ -1,0 +1,14 @@
+version: '3.9'
+
+services:
+  qdrant:
+    container_name: reid-qdrant
+    image: qdrant/qdrant
+    restart: always
+    ports:
+      - ${QDRANT_PORT}:6333
+    volumes:
+      - reid-qdrant-data:/qdrant/storage:z
+
+volumes:
+  reid-qdrant-data:
