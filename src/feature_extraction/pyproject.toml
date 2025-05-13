@@ -10,11 +10,14 @@ dependencies = [
     "markupsafe>=2.1.0,<3.0.0",
     "rich>=14.0.0",
     "ray[serve]>=2.46.0",
+    "huggingface-hub[cli]>=0.31.1",
+    "python-multipart>=0.0.20",
 ]
 
 
 [dependency-groups]
 dev = [
+    "aiohttp>=3.11.18",
     "deptry>=0.23.0",
     "ruff>=0.11.5",
 ]
