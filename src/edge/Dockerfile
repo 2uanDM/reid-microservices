@@ -1,4 +1,4 @@
-FROM python:3.11.15
+FROM python:3.11-slim-buster
 
 WORKDIR /app
 
@@ -11,6 +11,4 @@ COPY . /app
 
 RUN pip install --upgrade pip \
  && pip install uv \
- && uv pip install -r <(uv pip compile pyproject.toml)
-
-CMD ["python", "main.py"]
+ && uv sync
