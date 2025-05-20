@@ -146,7 +146,7 @@ class EdgeDeviceRunner:
         print("------ Information of Edge Device ------")
         print(f"Device ID: {self.device_id}")
         print(f"Source: {self.source_url}")
-        print(f"Kafka server URI: {self.kafka_server_uri}")
+        print(f"Kafka server URI: {self.kafka_bootstrap_servers}")
         print(f"ReID topic: {self.reid_topic}")
 
         source = self.read_source()
