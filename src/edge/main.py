@@ -22,7 +22,7 @@ class EdgeDeviceRunner:
         device_id: str,
         source_url: str,
         reid_topic: str,
-        kafka_server_uri: str,
+        kafka_bootstrap_servers: str,
         ensure_onnx: bool = True,
         model_path: str = "weights/best.onnx",
     ):
@@ -30,7 +30,7 @@ class EdgeDeviceRunner:
         self.source_url = source_url
         self.model_path = model_path
         self.reid_topic = reid_topic
-        self.kafka_server_uri = kafka_server_uri
+        self.kafka_bootstrap_servers = kafka_bootstrap_servers
 
         # Load Avro schema - try multiple possible locations
         self.avro_schema = self.load_schema()
@@ -73,7 +73,7 @@ class EdgeDeviceRunner:
         # For Avro serialization
         self.producer = KafkaProducer(
             client_id=self.device_id,
-            bootstrap_servers=self.kafka_server_uri,
+            bootstrap_servers=self.kafka_bootstrap_servers,
             key_serializer=lambda x: x.encode("utf-8"),
             value_serializer=self.serialize_message,
             acks="all",
@@ -245,10 +245,10 @@ if __name__ == "__main__":
         help="Kafka topic for re-identification",
     )
     parser.add_argument(
-        "--kafka_server_uri",
+        "--kafka_bootstrap_servers",
         type=str,
         default="localhost:9092",
-        help="Kafka server URI",
+        help="Kafka bootstrap servers",
     )
     parser.add_argument(
         "--model_path",
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         device_id=args.device_id,
         source_url=args.source,
         reid_topic=args.reid_topic,
-        kafka_server_uri=args.kafka_server_uri,
+        kafka_bootstrap_servers=args.kafka_bootstrap_servers,
         ensure_onnx=args.ensure_onnx,
         model_path=args.model_path,
     )
