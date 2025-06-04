@@ -71,3 +71,20 @@ Resource limits explanation:
 You can adjust these values based on your system resources:
 - CPU: Use values like "1", "1.5", "2", "4" etc.
 - Memory: Use values like "1g", "2g", "4g", "8g" or "512m", "1024m" etc.
+
+## Benchmark
+
+Here, to compare the FLOPs between CPU-based device, Jetson Nano and GPU, we can use the `benchmark` directory.
+
+1. Build the benchmark
+
+```bash
+cd src/edge/benchmark
+docker build -t intel-flops-benchmark .
+```
+
+2. Run the benchmark with resource limits
+
+```bash
+docker run --rm -it --cpus="4" --memory="512m" intel-flops-benchmark
+```
