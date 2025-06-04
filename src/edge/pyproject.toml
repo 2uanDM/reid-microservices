@@ -12,6 +12,7 @@ dependencies = [
     "onnxruntime>=1.21.1",
     "onnxslim>=0.1.50",
     "opencv-python>=4.11.0.86",
+    "openvino>=2025.1.0",
     "python-dotenv>=1.1.0",
     "ultralytics>=8.3.115",
 ]

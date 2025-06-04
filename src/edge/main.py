@@ -24,6 +24,7 @@ class EdgeDeviceRunner:
         reid_topic: str,  # Kafka topic for re-identification
         kafka_bootstrap_servers: str,  # Kafka server URI
         ensure_onnx: bool = True,  # Whether to ensure the weights are in ONNX format
+        ensure_openvino: bool = True,  # Whether to ensure the weights are in OpenVINO format
         model_path: str = "weights/best.onnx",  # Path to the YOLO model
     ):
         self.device_id = device_id
@@ -40,7 +41,11 @@ class EdgeDeviceRunner:
         self.init_kafka()
 
         # Init Yolo model
-        self.model = YoloModel(model_path=model_path, ensure_onnx=ensure_onnx)
+        self.model = YoloModel(
+            model_path=model_path,
+            ensure_onnx=ensure_onnx,
+            ensure_openvino=ensure_openvino,
+        )
 
     def load_schema(self) -> schema.Schema:
         possible_paths = [
@@ -76,7 +81,10 @@ class EdgeDeviceRunner:
             bootstrap_servers=self.kafka_bootstrap_servers,
             key_serializer=lambda x: x.encode("utf-8"),  # Key here is the device ID
             value_serializer=self.serialize_message,  # Serialize the message using Avro
-            acks="all",  # Wait for all replicas to confirm the message
+            linger_ms=10,
+            batch_size=16384,
+            acks=0,
+            max_in_flight_requests_per_connection=5,
         )
 
     def serialize_message(self, message: dict) -> bytes:
@@ -263,6 +271,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Ensure the model is in ONNX format",
     )
+    parser.add_argument(
+        "--ensure_openvino",
+        action="store_true",
+        help="Ensure the model is in OpenVINO format",
+    )
     args = parser.parse_args()
 
     runner = EdgeDeviceRunner(
@@ -271,6 +284,7 @@ if __name__ == "__main__":
         reid_topic=args.reid_topic,
         kafka_bootstrap_servers=args.kafka_bootstrap_servers,
         ensure_onnx=args.ensure_onnx,
+        ensure_openvino=args.ensure_openvino,
         model_path=args.model_path,
     )
     runner.run()
