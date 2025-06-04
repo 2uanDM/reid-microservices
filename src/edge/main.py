@@ -1,4 +1,4 @@
-import argparse  # Read arguments from command line
+import argparse
 import io as python_io
 import os
 import time
@@ -9,9 +9,9 @@ import numpy as np
 from avro import io, schema
 from avro.io import DatumWriter
 from dotenv import load_dotenv
+from yolo import YoloModel
 
 from kafka import KafkaProducer
-from src.yolo import YoloModel
 
 load_dotenv()
 
@@ -19,20 +19,21 @@ load_dotenv()
 class EdgeDeviceRunner:
     def __init__(
         self,
-        device_id: str,
-        source_url: str,
-        reid_topic: str,
-        kafka_bootstrap_servers: str,
-        ensure_onnx: bool = True,
-        model_path: str = "weights/best.onnx",
+        device_id: str,  # Each edge device (camera) has a unique ID
+        source_url: str,  # Source of the demo video or RTSP stream
+        reid_topic: str,  # Kafka topic for re-identification
+        kafka_bootstrap_servers: str,  # Kafka server URI
+        ensure_onnx: bool = True,  # Whether to ensure the weights are in ONNX format
+        model_path: str = "weights/best.onnx",  # Path to the YOLO model
     ):
         self.device_id = device_id
         self.source_url = source_url
         self.model_path = model_path
         self.reid_topic = reid_topic
         self.kafka_bootstrap_servers = kafka_bootstrap_servers
+        self.printed_image_size = False
 
-        # Load Avro schema - try multiple possible locations
+        # Load Avro Schema for Kafka message serialization
         self.avro_schema = self.load_schema()
 
         # Init Kafka producer
@@ -41,7 +42,7 @@ class EdgeDeviceRunner:
         # Init Yolo model
         self.model = YoloModel(model_path=model_path, ensure_onnx=ensure_onnx)
 
-    def load_schema(self):
+    def load_schema(self) -> schema.Schema:
         possible_paths = [
             "schema.avsc",  # Current directory
             "src/edge/schema.avsc",  # From project root
@@ -70,16 +71,15 @@ class EdgeDeviceRunner:
         )
 
     def init_kafka(self):
-        # For Avro serialization
         self.producer = KafkaProducer(
             client_id=self.device_id,
             bootstrap_servers=self.kafka_bootstrap_servers,
-            key_serializer=lambda x: x.encode("utf-8"),
-            value_serializer=self.serialize_message,
-            acks="all",
+            key_serializer=lambda x: x.encode("utf-8"),  # Key here is the device ID
+            value_serializer=self.serialize_message,  # Serialize the message using Avro
+            acks="all",  # Wait for all replicas to confirm the message
         )
 
-    def serialize_message(self, message):
+    def serialize_message(self, message: dict) -> bytes:
         try:
             writer = DatumWriter(self.avro_schema)
             bytes_writer = python_io.BytesIO()
@@ -89,12 +89,12 @@ class EdgeDeviceRunner:
         except Exception as e:
             print(f"Error serializing message: {e}")
             print(f"Message: {message}")
-            raise
+            raise e
 
     def produce(
         self,
-        frame: np.ndarray | None = None,
-        payload: dict | None = None,
+        frame: np.ndarray | None = None,  # Input frame from the video source
+        payload: dict | None = None,  # Metadata about the frame
     ):
         if payload is None:
             payload = {}
@@ -121,8 +121,11 @@ class EdgeDeviceRunner:
 
         if frame is not None and frame.size > 0:
             # Compress image to JPEG bytes
-            _, img_bytes = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            _, img_bytes = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             message["image_data"] = img_bytes.tobytes()
+            if not self.printed_image_size:
+                print(f"Image size: {len(img_bytes) / 1024} KB")
+                self.printed_image_size = True
 
         # Send message using Avro serialization
         self.producer.send(self.reid_topic, value=message, key=self.device_id)
@@ -131,7 +134,6 @@ class EdgeDeviceRunner:
         if self.source_url.startswith("rtsp://") or self.source_url.startswith(
             "http://"
         ):
-            # TODO: Handle RTSP stream
             raise NotImplementedError("RTSP stream handling not implemented")
         elif self.source_url.split(".")[-1].lower() in {
             "mp4",

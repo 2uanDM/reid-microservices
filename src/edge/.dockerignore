@@ -1,0 +1,7 @@
+.venv
+tests
+.python-version
+Dockerfile
+.dockerignore
+Makefile
+README.md
