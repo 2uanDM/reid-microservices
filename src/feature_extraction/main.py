@@ -11,16 +11,17 @@ from torchvision import transforms
 from src.models.lightmbn_n import LMBN_n
 from src.models.osnet import osnet_x1_0
 
+# Create FastAPI app with explicit documentation configuration
 app = FastAPI()
 
 
 @serve.deployment(
-    num_replicas=1,
+    num_replicas=4,
     ray_actor_options={
-        "num_cpus": 4,
-        "num_gpus": 1,
+        "num_cpus": 2,
+        "num_gpus": 0.25,
     },
-    max_ongoing_requests=16,
+    max_ongoing_requests=32,
 )
 @serve.ingress(app)
 class FeatureExtractionService:
@@ -124,8 +125,8 @@ class FeatureExtractionService:
             return features_avg.detach().cpu().numpy().flatten().tolist()
 
     @serve.batch(
-        max_batch_size=16,
-        batch_wait_timeout_s=0.01,  # Much shorter timeout (10ms)
+        max_batch_size=32,
+        batch_wait_timeout_s=0.005,  # Much shorter timeout (10ms)
     )
     @torch.no_grad()
     async def extract_features_batch(
