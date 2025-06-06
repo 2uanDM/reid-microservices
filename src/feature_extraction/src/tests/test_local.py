@@ -1,6 +1,10 @@
 import argparse
 import io
+import os
+import sys
 import time
+
+sys.path.append(os.getcwd())
 from pathlib import Path
 
 import numpy as np
