@@ -39,7 +39,7 @@ class ReIdConsumer:
         self.client_id = f"reid-consumer-{uuid.uuid4()}"
 
         # Load Avro schema
-        with open("schema.avsc", "r") as f:
+        with open("src/config/schema.avsc", "r") as f:
             self.schema = avro.schema.parse(f.read())
         self.reader = DatumReader(self.schema)
 
@@ -109,7 +109,12 @@ class ReIdConsumer:
                 # print(f"Size in MB: {round(len(msg.value) / 1024 / 1024, 2)}")
                 try:
                     decoded_message = self.decode_message(msg.value)
-                    # console.log(f"Frame Number: {decoded_message.frame_number}")
+                    console.log(
+                        f"Device ID: {decoded_message.device_id} - Frame Number: {decoded_message.frame_number}"
+                    )
+
+                    # Crop bounding boxes
+
                 except Exception as e:
                     console.log(
                         f"[bold red]Error[/bold red] processing message: {str(e)}"

@@ -1,4 +1,5 @@
 import io
+import traceback
 from typing import List, Literal
 
 import torch
@@ -49,7 +50,7 @@ class ModelService:
 
         # Initialize transform
         self.transform = {
-            "osnet": transforms.Compose(
+            "embedding": transforms.Compose(
                 [
                     transforms.ToTensor(),
                     transforms.Resize((256, 128)),
@@ -58,7 +59,7 @@ class ModelService:
                     ),
                 ],
             ),
-            "efficientnet": transforms.Compose(
+            "classification": transforms.Compose(
                 [
                     transforms.ToTensor(),
                     transforms.Resize((224, 224)),
@@ -91,30 +92,45 @@ class ModelService:
         model: Literal["osnet", "lmbn", "efficientnet"] = "osnet",
     ) -> torch.Tensor:
         """Preprocess a single image."""
-        if model == "lmbn":
-            model = "osnet"
+        if model == "lmbn" or model == "osnet":
+            model_type = "embedding"
+        else:
+            model_type = "classification"
+
+        # Preprocess image
         try:
             img = Image.open(io.BytesIO(image_bytes))
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            img_tensor = self.transform[model](img).unsqueeze(0)
+            img_tensor = self.transform[model_type](img).unsqueeze(0)
             return img_tensor.to(self.device)
         except Exception as e:
+            print(traceback.format_exc())
             raise HTTPException(
                 status_code=400, detail=f"Invalid image format: {str(e)}"
             )
 
-    def preprocess_batch(self, images_bytes: List[bytes]) -> torch.Tensor:
+    def preprocess_batch(
+        self,
+        images_bytes: List[bytes],
+        models: List[Literal["osnet", "lmbn", "efficientnet"]] = ["osnet"],
+    ) -> torch.Tensor:
         """Preprocess a batch of images."""
+        model_types = [
+            "embedding" if model == "lmbn" or model == "osnet" else "classification"
+            for model in models
+        ]
+
         processed_images = []
-        for img_bytes in images_bytes:
+        for img_bytes, model_type in zip(images_bytes, model_types):
             try:
                 img = Image.open(io.BytesIO(img_bytes))
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                img_tensor = self.transform(img).unsqueeze(0)
+                img_tensor = self.transform[model_type](img).unsqueeze(0)
                 processed_images.append(img_tensor)
             except Exception as e:
+                print(traceback.format_exc())
                 raise HTTPException(
                     status_code=400, detail=f"Invalid image format: {str(e)}"
                 )
@@ -135,24 +151,27 @@ class ModelService:
             return features.detach().cpu().numpy().flatten().tolist()
         else:
             features = self.lmbn_model(img_tensor)  # Shape: [1, 512, 7]
-            # Average across the 7 components to get [1, 512] features
+            # Average across the 7 components to get [1s, 512] features
             features_avg = features.mean(dim=2)  # Shape: [1, 512]
             return features_avg.detach().cpu().numpy().flatten().tolist()
 
     @serve.batch(
         max_batch_size=32,
-        batch_wait_timeout_s=0.005,  # Much shorter timeout (10ms)
+        batch_wait_timeout_s=0.01,  # Much shorter timeout (10ms)
     )
     @torch.no_grad()
     async def extract_features_batch(
         self,
         images_bytes_list: List[bytes],
-        model: Literal["osnet", "lmbn"] = "osnet",
+        models: List[Literal["osnet", "lmbn"]] = ["osnet"],
     ) -> List[List[float]]:
         """Extract features from multiple images - optimized for throughput."""
         # images_bytes_list is already a list of bytes from different requests
-        batch_tensors = self.preprocess_batch(images_bytes_list)
-        if model == "osnet":
+        print(f"Dynamic batching: {len(images_bytes_list)} images")
+
+        batch_tensors = self.preprocess_batch(images_bytes_list, models)
+
+        if models[0] == "osnet":
             features = self.os_model(batch_tensors)
             return features.detach().cpu().numpy().tolist()
         else:
@@ -175,22 +194,14 @@ class ModelService:
     @app.post("/embedding/batch")
     async def embedding_batch(
         self,
-        images: List[UploadFile] = File(...),
+        image: UploadFile = File(...),
         model: Literal["osnet", "lmbn"] = "osnet",
     ):
-        """Batch endpoint - uses batching for throughput."""
-        images_data = []
-        for img in images:
-            img_data = await img.read()
-            images_data.append(img_data)
-
+        """Batch endpoint - uses dynamic batching for throughput."""
         # This will trigger batching if multiple requests come simultaneously
-        features_list = []
-        for img_data in images_data:
-            features = await self.extract_features_batch(img_data, model)
-            features_list.append(features)
-
-        return {"features": features_list, "count": len(features_list)}
+        image_data = await image.read()
+        features = await self.extract_features_batch(image_data, model)
+        return {"features": features, "count": len(features)}
 
     @app.post("/embedding/true-batch")
     async def embedding_true_batch(
@@ -200,7 +211,7 @@ class ModelService:
     ):
         """True batch processing - process all images in a single batch."""
         images_data = [await img.read() for img in images]
-        batch_tensors = self.preprocess_batch(images_data)
+        batch_tensors = self.preprocess_batch(images_data, model)
 
         with torch.no_grad():
             if model == "osnet":
