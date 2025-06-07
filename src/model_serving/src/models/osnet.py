@@ -10,7 +10,7 @@ from torch.nn import functional as F
 
 console = Console()
 
-__all__ = ["osnet_x1_0", "osnet_x0_75", "osnet_x0_5", "osnet_x0_25"]
+__all__ = ["osnet_x1_0"]
 
 
 if not os.path.exists("src/assets/models/osnet"):
@@ -20,10 +20,7 @@ if not os.path.exists("src/assets/models/osnet"):
 
 
 pretrained_urls = {
-    "osnet_x1_0": "src/assets/models/osnet/osnet_x1_0_cuhk03_softmax/model/model.pth.tar-150",
-    "osnet_x0_75": "src/assets/models/osnet/osnet_x0_75_cuhk03_softmax/model/model.pth.tar-150",
-    "osnet_x0_5": "src/assets/models/osnet/osnet_x0_5_cuhk03_softmax/model/model.pth.tar-150",
-    "osnet_x0_25": "src/assets/models/osnet/osnet_x0_25_cuhk03_softmax/model/model.pth.tar-150",
+    "osnet_x1_0": "src/assets/models/osnet/model.pth.tar-150",
 }
 
 
