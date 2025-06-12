@@ -187,14 +187,14 @@ def crop_image(image: np.ndarray, bboxes: List[List[float]]) -> List[np.ndarray]
 def draw_bbox(
     image: np.ndarray,
     bboxes: List[List[float]],
-    color: Tuple[int, int, int] = (0, 255, 0),
+    color: Tuple[int, int, int] = (139, 69, 19),
     thickness: int = 2,
     class_ids: List[int] = None,
     confidences: List[float] = None,
     ids: List[int] = None,
     class_names: List[str] = None,
-    font_scale: float = 0.5,
-    font_thickness: int = 1,
+    font_scale: float = 1,
+    font_thickness: int = 2,
 ) -> np.ndarray:
     """
     Draw bounding boxes on an image with optional labels.
