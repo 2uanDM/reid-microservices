@@ -195,19 +195,16 @@ class ReIdConsumer:
 
     async def handle_incoming_message(self, messages):
         """
-        Handle incoming messages asynchronously
+        Handle incoming messages asynchronously, processing each frame in parallel while preserving order.
         """
         partition, msgs = list(messages.items())[0]
         console.log(f"Received batch: {len(msgs)} messages on partition {partition}")
         os.makedirs("test", exist_ok=True)
 
-        for msg in msgs:  # msg here represents for a frame of the video
+        async def process_msg(idx, msg):
             try:
                 # Decode the message from bytes
                 decoded_message = self._decode_message(msg.value)
-                console.log(
-                    f"ID: {decoded_message.device_id} - Frame: {decoded_message.frame_number}"
-                )
 
                 # Convert image from bytes to numpy array (4ms average - 300KB for Full HD Image)
                 image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
@@ -231,10 +228,28 @@ class ReIdConsumer:
                 )
 
                 cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
+                console.log(
+                    f"{decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
+                )
+                # Return index and any result you want to keep for downstream tracking
+                return idx, decoded_message, person_metadatas
 
             except Exception as e:
                 console.log(f"[bold red]Error[/bold red] processing message: {str(e)}")
                 console.log(traceback.format_exc())
+                return idx, None, None
+
+        # Launch all tasks concurrently, keeping track of their original order
+        tasks = [process_msg(idx, msg) for idx, msg in enumerate(msgs)]
+        results = await asyncio.gather(*tasks)
+
+        # Sort results by original index to preserve order
+        results.sort(key=lambda x: x[0])
+        # Now results is a list of (idx, decoded_message, person_metadatas) in order
+        # You can continue your tracking code here using the ordered results
+        # For example:
+        # for idx, decoded_message, person_metadatas in results:
+        #     ... # tracking logic
 
     async def run_async(self):
         """
