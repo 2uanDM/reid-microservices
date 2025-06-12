@@ -5,13 +5,16 @@ import traceback
 import uuid
 
 import avro.schema
+import cv2
+import numpy as np
 from avro.io import BinaryDecoder, DatumReader
 from dotenv import load_dotenv
 from rich.console import Console
 
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
-from src.models import EdgeDeviceMessage
+from src.schemas import EdgeDeviceMessage
+from src.utils.ops import draw_bbox
 
 console = Console()
 
@@ -39,7 +42,7 @@ class ReIdConsumer:
         self.client_id = f"reid-consumer-{uuid.uuid4()}"
 
         # Load Avro schema
-        with open("src/config/schema.avsc", "r") as f:
+        with open("src/configs/schema.avsc", "r") as f:
             self.schema = avro.schema.parse(f.read())
         self.reader = DatumReader(self.schema)
 
@@ -105,6 +108,7 @@ class ReIdConsumer:
         for partition, msgs in messages.items():
             console.log(f"Processing messages from partition {partition}")
             console.log(f"Received batch: {len(msgs)} messages")
+            os.makedirs("test", exist_ok=True)
             for msg in msgs:
                 # print(f"Size in MB: {round(len(msg.value) / 1024 / 1024, 2)}")
                 try:
@@ -113,7 +117,19 @@ class ReIdConsumer:
                         f"Device ID: {decoded_message.device_id} - Frame Number: {decoded_message.frame_number}"
                     )
 
-                    # Crop bounding boxes
+                    # Convert image from bytes to numpy array (4ms average - 300KB for Full HD Image)
+                    image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
+                    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+
+                    # Draw bounding boxes
+                    image = draw_bbox(
+                        image,
+                        bboxes=[x.bbox for x in decoded_message.result],
+                        class_ids=[x.class_id for x in decoded_message.result],
+                        confidences=[x.confidence for x in decoded_message.result],
+                    )
+
+                    cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
 
                 except Exception as e:
                     console.log(

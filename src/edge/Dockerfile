@@ -41,4 +41,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 # Set the entrypoint to run main.py with arguments
-ENTRYPOINT ["python", "main.py"]
+ENTRYPOINT ["python", "-m", "src"]
