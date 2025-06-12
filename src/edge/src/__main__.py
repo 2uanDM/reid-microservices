@@ -84,7 +84,7 @@ class EdgeDeviceRunner:
             value_serializer=self.serialize_message,  # Serialize the message using Avro
             linger_ms=10,
             batch_size=16384,
-            acks=0,
+            acks=1,  # 0: No acknowledgment, 1: Leader acknowledgment, 'all': All replicas acknowledgment
             max_in_flight_requests_per_connection=5,
         )
 
