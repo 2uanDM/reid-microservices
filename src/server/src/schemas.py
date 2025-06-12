@@ -1,6 +1,7 @@
 from datetime import datetime
-from typing import List
+from typing import List, Literal
 
+import numpy as np
 from pydantic import BaseModel
 
 
@@ -21,3 +22,16 @@ class EdgeDeviceMessage(BaseModel):
         return datetime.fromtimestamp(
             self.created_at / 1_000_000_000
         )  # Convert from nanoseconds to seconds
+
+
+class PersonMetadata(BaseModel):
+    """
+    Including `image`, `embedding` and `gender` for a person
+    """
+
+    image: np.ndarray
+    embedding: list
+    gender: Literal["male", "female"]
+    gender_confidence: float
+
+    model_config = dict(arbitrary_types_allowed=True)

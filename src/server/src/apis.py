@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, Literal, Union
+from typing import Any, Dict, Literal, Tuple, Union
 
 import httpx
 
@@ -42,7 +42,8 @@ class ModelServiceClient:
         image_path: Union[str, Path, bytes],
         dynamic_batching: bool = False,
         model: Literal["osnet", "lmbn"] = "osnet",
-    ) -> Dict[str, Any]:
+        original_idx: int = None,
+    ) -> Tuple[int, Dict[str, Any]]:
         """
         Extract features from a single image.
 
@@ -51,7 +52,7 @@ class ModelServiceClient:
             model: Model to use for feature extraction ("osnet" or "lmbn")
 
         Returns:
-            Dict containing features and shape information
+            Tuple containing original index and Dict containing features and shape information
         """
         self._ensure_client()
 
@@ -73,15 +74,15 @@ class ModelServiceClient:
             f"{self.base_url}{endpoint}", files=files, data=data
         )
         if response.status_code == 200:
-            return response.json()
+            return original_idx, response.json()
         else:
             raise Exception(
                 f"Feature extraction failed with status {response.status_code}: {response.text}"
             )
 
     async def classify_gender(
-        self, image_path: Union[str, Path, bytes]
-    ) -> Dict[str, Any]:
+        self, image_path: Union[str, Path, bytes], original_idx: int
+    ) -> Tuple[int, Dict[str, Any]]:
         """
         Classify gender from input image.
 
@@ -89,7 +90,7 @@ class ModelServiceClient:
             image_path: Path to image file or bytes data
 
         Returns:
-            Dict containing gender prediction, confidence, and probabilities
+            Tuple containing original index and Dict containing gender prediction, confidence, and probabilities
         """
         self._ensure_client()
 
@@ -108,7 +109,7 @@ class ModelServiceClient:
             f"{self.base_url}/gender/classify", files=files
         )
         if response.status_code == 200:
-            return response.json()
+            return original_idx, response.json()
         else:
             raise Exception(
                 f"Gender classification failed with status {response.status_code}: {response.text}"

@@ -189,10 +189,10 @@ def draw_bbox(
     bboxes: List[List[float]],
     color: Tuple[int, int, int] = (139, 69, 19),
     thickness: int = 2,
-    class_ids: List[int] = None,
-    confidences: List[float] = None,
+    detection_confs: List[float] = None,
     ids: List[int] = None,
-    class_names: List[str] = None,
+    genders: List[str] = None,
+    gender_confs: List[float] = None,
     font_scale: float = 1,
     font_thickness: int = 2,
 ) -> np.ndarray:
@@ -204,7 +204,6 @@ def draw_bbox(
         bboxes (List[List[float]]): List of bounding boxes in [x1, y1, x2, y2] format.
         color (Tuple[int, int, int], optional): Color of the bounding box in BGR format. Defaults to (0, 255, 0) green.
         thickness (int, optional): Thickness of the bounding box lines. Defaults to 2.
-        class_ids (List[int], optional): List of class IDs for each bounding box. If provided, will be displayed as labels.
         confidences (List[float], optional): List of confidence scores for each bounding box. If provided, will be displayed as labels.
         ids (List[int], optional): List of object IDs for each bounding box. If provided, will be displayed as labels.
         class_names (List[str], optional): List of class names corresponding to class_ids. If not provided, class_ids will be shown as numbers.
@@ -214,6 +213,11 @@ def draw_bbox(
     Returns:
         np.ndarray: Image with drawn bounding boxes and optional labels.
     """
+    # Assert if genders exist then gender_confs must exist
+    if genders is not None:
+        if gender_confs is None:
+            raise ValueError("gender_confs must be provided if genders is provided")
+
     # Create a copy to avoid modifying the original image
     image_copy = image.copy()
 
@@ -238,16 +242,12 @@ def draw_bbox(
         if ids is not None and i < len(ids):
             label_parts.append(f"ID:{ids[i]}")
 
-        # Add class if provided
-        if class_ids is not None and i < len(class_ids):
-            if class_names is not None and class_ids[i] < len(class_names):
-                label_parts.append(f"{class_names[class_ids[i]]}")
-            else:
-                label_parts.append(f"Class:{class_ids[i]}")
+        if genders is not None and i < len(genders):
+            label_parts.append(f"{genders[i]} {gender_confs[i]:.2f}")
 
         # Add confidence if provided
-        if confidences is not None and i < len(confidences):
-            label_parts.append(f"{confidences[i]:.2f}")
+        if detection_confs is not None and i < len(detection_confs):
+            label_parts.append(f"det: {detection_confs[i]:.2f}")
 
         # Draw label if any parts exist
         if label_parts:
@@ -259,7 +259,7 @@ def draw_bbox(
             )
 
             # Calculate label position (above the bounding box)
-            label_x = x1
+            label_x = x1 - 10
             label_y = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 10
 
             # Draw background rectangle for text

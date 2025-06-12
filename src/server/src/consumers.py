@@ -1,8 +1,9 @@
+import asyncio
 import io
 import os
-import time
 import traceback
 import uuid
+from typing import Any, Dict, List, Tuple
 
 import avro.schema
 import cv2
@@ -13,8 +14,9 @@ from rich.console import Console
 
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
-from src.schemas import EdgeDeviceMessage
-from src.utils.ops import draw_bbox
+from src.apis import ModelServiceClient
+from src.schemas import EdgeDeviceMessage, PersonMetadata
+from src.utils.ops import crop_image, draw_bbox
 
 console = Console()
 
@@ -23,7 +25,10 @@ load_dotenv()
 
 
 class ReIdConsumer:
-    def __init__(self):
+    def __init__(self, reid_model: str = "osnet"):
+        assert reid_model in ["osnet", "lmbn"], "Invalid reid model"
+        self.reid_model = reid_model
+
         # Environment variables
         self.feature_extraction_url = os.getenv(
             "FEATURE_EXTRACTION_URL", "http://localhost:8000/embedding"
@@ -45,6 +50,9 @@ class ReIdConsumer:
         with open("src/configs/schema.avsc", "r") as f:
             self.schema = avro.schema.parse(f.read())
         self.reader = DatumReader(self.schema)
+
+        # Initialize model client
+        self.model_client = ModelServiceClient()
 
     def init_kafka_consumer(self):
         """
@@ -96,7 +104,7 @@ class ReIdConsumer:
             )
             return True
 
-    def decode_message(self, message_value: bytes) -> EdgeDeviceMessage:
+    def _decode_message(self, message_value: bytes) -> EdgeDeviceMessage:
         """
         Decode Avro message into Pydantic model
         """
@@ -104,40 +112,134 @@ class ReIdConsumer:
         avro_data = self.reader.read(decoder)
         return EdgeDeviceMessage(**avro_data)
 
-    def handle_incoming_message(self, messages):
-        for partition, msgs in messages.items():
-            console.log(f"Processing messages from partition {partition}")
-            console.log(f"Received batch: {len(msgs)} messages")
-            os.makedirs("test", exist_ok=True)
-            for msg in msgs:
-                # print(f"Size in MB: {round(len(msg.value) / 1024 / 1024, 2)}")
-                try:
-                    decoded_message = self.decode_message(msg.value)
-                    console.log(
-                        f"Device ID: {decoded_message.device_id} - Frame Number: {decoded_message.frame_number}"
-                    )
+    async def _get_embedding(
+        self, images: List[Tuple[int, bytes]]
+    ) -> List[List[float]]:
+        """
+        Get embeddings for a list of images
 
-                    # Convert image from bytes to numpy array (4ms average - 300KB for Full HD Image)
-                    image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
-                    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+        Sample return:
+        ```
+        [
+            [float],
+            ...
+        ]
+        ```
+        """
+        tasks = [
+            self.model_client.extract_features(
+                img, model=self.reid_model, original_idx=original_idx
+            )
+            for original_idx, img in images
+        ]
+        embeddings = await asyncio.gather(*tasks)
 
-                    # Draw bounding boxes
-                    image = draw_bbox(
-                        image,
-                        bboxes=[x.bbox for x in decoded_message.result],
-                        class_ids=[x.class_id for x in decoded_message.result],
-                        confidences=[x.confidence for x in decoded_message.result],
-                    )
+        # Sort embeddings by original index
+        embeddings.sort(key=lambda x: x[0])
 
-                    cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
+        return [x[1]["features"] for x in embeddings]
 
-                except Exception as e:
-                    console.log(
-                        f"[bold red]Error[/bold red] processing message: {str(e)}"
-                    )
-                    console.log(traceback.format_exc())
+    async def _get_genders(
+        self, images: List[Tuple[int, bytes]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Get genders for a list of images
 
-    def start(self):
+        Sample return:
+        ```
+        [
+            {"gender": "male", "confidence": 0.95},
+            ...
+        ]
+        ```
+        """
+        tasks = [
+            self.model_client.classify_gender(img, original_idx)
+            for original_idx, img in images
+        ]
+        genders = await asyncio.gather(*tasks)
+
+        # Sort genders by original index
+        genders.sort(key=lambda x: x[0])
+
+        return [
+            {"gender": x[1]["gender"], "confidence": x[1]["confidence"]}
+            for x in genders
+        ]
+
+    async def get_persons_metadata(
+        self, images: List[np.ndarray]
+    ) -> List[PersonMetadata]:
+        """
+        Get person metadata for a list of images
+        Return a list of people with their embeddings, genders and the cropped images
+        """
+        # Since asyncio.gather does not support returning original index
+        # We add index here, so after sorting we can match the correct person metadata
+        image_bytes = [
+            (idx, cv2.imencode(".jpg", image)[1].tobytes())
+            for idx, image in enumerate(images)
+        ]
+        embeddings = await self._get_embedding(image_bytes)
+        genders = await self._get_genders(image_bytes)
+
+        return [
+            PersonMetadata(
+                image=image,
+                embedding=embedding,
+                gender=gender["gender"],
+                gender_confidence=gender["confidence"],
+            )
+            for image, embedding, gender in zip(images, embeddings, genders)
+        ]
+
+    async def handle_incoming_message(self, messages):
+        """
+        Handle incoming messages asynchronously
+        """
+        partition, msgs = list(messages.items())[0]
+        console.log(f"Received batch: {len(msgs)} messages on partition {partition}")
+        os.makedirs("test", exist_ok=True)
+
+        for msg in msgs:  # msg here represents for a frame of the video
+            try:
+                # Decode the message from bytes
+                decoded_message = self._decode_message(msg.value)
+                console.log(
+                    f"ID: {decoded_message.device_id} - Frame: {decoded_message.frame_number}"
+                )
+
+                # Convert image from bytes to numpy array (4ms average - 300KB for Full HD Image)
+                image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
+                image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+
+                # Crop images
+                person_images = crop_image(
+                    image, bboxes=[x.bbox for x in decoded_message.result]
+                )
+
+                # Get person metadata - now this is properly awaited within the async context
+                person_metadatas = await self.get_persons_metadata(person_images)
+
+                # Draw bounding boxes
+                image = draw_bbox(
+                    image,
+                    bboxes=[x.bbox for x in decoded_message.result],
+                    genders=[x.gender for x in person_metadatas],
+                    gender_confs=[x.gender_confidence for x in person_metadatas],
+                    detection_confs=[x.confidence for x in decoded_message.result],
+                )
+
+                cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
+
+            except Exception as e:
+                console.log(f"[bold red]Error[/bold red] processing message: {str(e)}")
+                console.log(traceback.format_exc())
+
+    async def run_async(self):
+        """
+        Async version of the main consumer loop
+        """
         if not self.init_kafka_consumer():
             return
 
@@ -146,21 +248,31 @@ class ReIdConsumer:
         )
         console.log(f"Consumer group: {self.consumer_group}")
 
-        try:
-            while True:
-                messages = self.consumer.poll(
-                    timeout_ms=int(self.poll_timeout),
-                    max_records=int(self.max_messages),
-                )
+        # Initialize the model client's HTTP client
+        async with self.model_client:
+            try:
+                while True:
+                    messages = self.consumer.poll(
+                        timeout_ms=int(self.poll_timeout),
+                        max_records=int(self.max_messages),
+                    )
 
-                if messages:
-                    self.handle_incoming_message(messages)
-                time.sleep(int(self.poll_timeout) / 1000)
-        except KeyboardInterrupt:
-            console.log("[yellow]Shutting down consumer...[/yellow]")
-        except Exception as e:
-            console.log(f"[bold red]Error in consumer loop:[/bold red] {str(e)}")
-            console.log(traceback.format_exc())
-        finally:
-            self.consumer.close()
-            console.log("[yellow]Consumer closed[/yellow]")
+                    if messages:
+                        await self.handle_incoming_message(messages)
+                    else:
+                        console.log("[yellow]No messages received[/yellow]")
+                        await asyncio.sleep(0.5)
+            except KeyboardInterrupt:
+                console.log("[yellow]Shutting down consumer...[/yellow]")
+            except Exception as e:
+                console.log(f"[bold red]Error in consumer loop:[/bold red] {str(e)}")
+                console.log(traceback.format_exc())
+            finally:
+                self.consumer.close()
+                console.log("[yellow]Consumer closed[/yellow]")
+
+    def start(self):
+        """
+        Start the consumer - now runs the async version
+        """
+        asyncio.run(self.run_async())
