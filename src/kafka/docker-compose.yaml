@@ -18,6 +18,7 @@ services:
       - zookeeper_log:/datalog # Lưu trữ transaction log
     networks:
       - kafka-net
+    restart: "unless-stopped"
 
   # --- Kafka Brokers (3 nodes) ---
   kafka1:
@@ -51,6 +52,7 @@ services:
       - kafka-net
     depends_on: # Khởi động sau khi ZooKeeper sẵn sàng
       - zookeeper
+    restart: "unless-stopped"
       
   kafka2:
     image: bitnami/kafka:3.6
@@ -75,6 +77,7 @@ services:
       - kafka-net
     depends_on:
       - zookeeper
+    restart: "unless-stopped"
 
   kafka3:
     image: bitnami/kafka:3.6
@@ -99,6 +102,22 @@ services:
       - kafka-net
     depends_on:
       - zookeeper
+    restart: "unless-stopped"
+
+  # --- Kafka Topic Initialization ---
+  kafka-init:
+    image: bitnami/kafka:3.6
+    container_name: kafka-init
+    command: ["bash", "/opt/init-topics.sh"]
+    volumes:
+      - ./init-topics.sh:/opt/init-topics.sh:ro
+    networks:
+      - kafka-net
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+    restart: "no"  # Only run once
 
   # --- Kafka UI (Optional Management Tool) ---
   kafka-ui:
@@ -119,6 +138,8 @@ services:
       - kafka1
       - kafka2
       - kafka3
+      - kafka-init
+    restart: "unless-stopped"
 
 # Định nghĩa network nội bộ
 networks:
