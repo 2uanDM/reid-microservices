@@ -32,18 +32,19 @@ file_console = None  # Will be set in ReIdConsumer.__init__
 
 def log_both(message: str):
     """Log message to both console and file"""
-    console.log(message)
-    if file_console:
-        file_console.log(message)
+    verbose = os.getenv("VERBOSE", "true").lower() == "true"
+    if verbose:
+        console.log(message)
+        if file_console:
+            file_console.log(message)
 
 
 load_dotenv()
 
 
 class ReIdConsumer:
-    def __init__(self, reid_model: str = "osnet"):
-        assert reid_model in ["osnet", "lmbn"], "Invalid reid model"
-        self.reid_model = reid_model
+    def __init__(self):
+        self.reid_model = os.getenv("EMBEDDING_MODEL", "osnet")
 
         # Log file setup
         self.log_file = open(log_filename, "w", encoding="utf-8")
@@ -101,7 +102,7 @@ class ReIdConsumer:
                 track_low_thresh=0.35,  # second association threshold
                 match_thresh=0.3,  # matching threshold for linear assignment
                 fuse_score=True,  # whether to fuse confidence scores with the iou distances before matching
-                new_track_thresh=0.85,  # threshold for init new track if the detection does not match any tracks
+                new_track_thresh=0.82,  # threshold for init new track if the detection does not match any tracks
             )
         )
 
@@ -184,7 +185,9 @@ class ReIdConsumer:
         """
         tasks = [
             self.model_client.extract_features(
-                img, model=self.reid_model, original_idx=original_idx
+                img,
+                model=self.reid_model,
+                original_idx=original_idx,
             )
             for original_idx, img in images
         ]
@@ -670,7 +673,6 @@ class ReIdConsumer:
         for track in bytetracker.tracked_stracks:
             if track.track_id == old_id:
                 track.track_id = new_id
-                log_both(f"      ✅ Remapped tracked_stracks: {old_id} → {new_id}")
                 remapped = True
                 break
 
@@ -678,7 +680,6 @@ class ReIdConsumer:
         for track in bytetracker.lost_stracks:
             if track.track_id == old_id:
                 track.track_id = new_id
-                log_both(f"      ✅ Remapped lost_stracks: {old_id} → {new_id}")
                 remapped = True
                 break
 
@@ -686,25 +687,10 @@ class ReIdConsumer:
         for track in bytetracker.removed_stracks:
             if track.track_id == old_id:
                 track.track_id = new_id
-                log_both(f"      ✅ Remapped removed_stracks: {old_id} → {new_id}")
                 remapped = True
                 break
 
-        if not remapped:
-            log_both(
-                f"      ⚠️  [bold red]WARNING![/bold red] Could not find track ID {old_id} in any BYTETracker lists"
-            )
-            log_both("      📊 BYTETracker state:")
-            log_both(
-                f"         - tracked_stracks: {[t.track_id for t in bytetracker.tracked_stracks]}"
-            )
-            log_both(
-                f"         - lost_stracks: {[t.track_id for t in bytetracker.lost_stracks]}"
-            )
-            log_both(
-                f"         - removed_stracks: {[t.track_id for t in bytetracker.removed_stracks]}"
-            )
-        else:
+        if remapped:
             log_both(f"      ✅ Successfully remapped {old_id} → {new_id}")
 
     def _finalize_videos(self):
@@ -770,38 +756,30 @@ class ReIdConsumer:
                 # Get person metadata - now this is properly awaited within the async context
                 person_metadatas = await self.get_persons_metadata(person_images)
 
-                # # Draw bounding boxes
-                # image = draw_bbox(
-                #     image,
-                #     bboxes=[x.bbox for x in decoded_message.result],
-                #     genders=[x.gender for x in person_metadatas],
-                #     gender_confs=[x.gender_confidence for x in person_metadatas],
-                #     detection_confs=[x.confidence for x in decoded_message.result],
-                # )
-                # cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
-
-                log_both(
-                    f"STEP 1: {decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
+                console.print(
+                    f"{decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
                 )
                 # Return index and any result you want to keep for downstream tracking
                 return idx, decoded_message, person_metadatas
 
             except Exception as e:
-                log_both(f"[bold red]Error[/bold red] processing message: {str(e)}")
-                log_both(traceback.format_exc())
+                console.print(
+                    f"[bold red]Error[/bold red] processing message: {str(e)}"
+                )
+                console.print(traceback.format_exc())
                 return idx, None, None
 
         # 1. Launch all tasks concurrently, keeping track of their original order
-        log_both("[bold cyan]Step 1: Async get person metadata[/bold cyan]")
+        console.print("[bold cyan]Step 1: Async get person metadata[/bold cyan]")
         tasks = [process_msg(idx, msg) for idx, msg in enumerate(msgs)]
         results = await asyncio.gather(*tasks)
 
         # 2. Sort results by original index to preserve order
-        log_both("[bold cyan]Step 2: Sort results by original index[/bold cyan]")
+        console.print("[bold cyan]Step 2: Sort results by original index[/bold cyan]")
         results.sort(key=lambda x: x[0])
 
         # 3. Perform tracking logic
-        log_both("[bold cyan]Step 3: Perform tracking logic[/bold cyan]")
+        console.print("[bold cyan]Step 3: Perform tracking logic[/bold cyan]")
         self.track(results)
 
     async def run_async(self):
@@ -811,10 +789,10 @@ class ReIdConsumer:
         if not self.init_kafka_consumer():
             return
 
-        log_both(
+        console.print(
             f"[bold cyan]Starting consumer[/bold cyan] ({self.client_id}) for topic: {self.input_topic_name}"
         )
-        log_both(f"Consumer group: {self.consumer_group}")
+        console.print(f"Consumer group: {self.consumer_group}")
 
         # Initialize the model client's HTTP client
         async with self.model_client:
@@ -824,21 +802,20 @@ class ReIdConsumer:
                         timeout_ms=int(self.poll_timeout),
                         max_records=int(self.max_messages),
                     )
-
                     if messages:
                         await self.handle_incoming_message(messages)
                     else:
-                        log_both("[yellow]No messages received[/yellow]")
+                        console.print("[yellow]No messages received[/yellow]")
                         await asyncio.sleep(0.5)
             except KeyboardInterrupt:
-                log_both("[yellow]Shutting down consumer...[/yellow]")
+                console.print("[yellow]Shutting down consumer...[/yellow]")
             except Exception as e:
-                log_both(f"[bold red]Error in consumer loop:[/bold red] {str(e)}")
-                log_both(traceback.format_exc())
+                console.print(f"[bold red]Error in consumer loop:[/bold red] {str(e)}")
+                console.print(traceback.format_exc())
             finally:
                 self.consumer.close()
                 self._finalize_videos()  # Ensure videos are properly finalized
-                log_both("[yellow]Consumer closed[/yellow]")
+                console.print("[yellow]Consumer closed[/yellow]")
                 self._cleanup_logging()
 
     def start(self):
