@@ -2,14 +2,14 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from src.utils import logger
+from src.utils import Logger
 
 from ..utils.ops import xywh2ltwh
 from .basetrack import BaseTrack, TrackState
 from .utils import matching
 from .utils.kalman_filter import KalmanFilterXYAH
 
-logger = logger(__name__)
+logger = Logger(__name__)
 
 
 class STrack(BaseTrack):
@@ -307,7 +307,9 @@ class BYTETracker:
 
     def update(
         self,
-        results,
+        scores: np.ndarray,
+        bboxes: np.ndarray,
+        cls: np.ndarray,
         img: Optional[np.ndarray] = None,
         feats: Optional[np.ndarray] = None,
     ) -> np.ndarray:
@@ -318,13 +320,13 @@ class BYTETracker:
         lost_stracks = []
         removed_stracks = []
 
-        scores = results.conf
-        bboxes = results.xywhr if hasattr(results, "xywhr") else results.xywh
-        # Add index
+        # scores = results.conf
+        # bboxes = results.xywhr if hasattr(results, "xywhr") else results.xywh
+        # # Add index
         bboxes = np.concatenate(
             [bboxes, np.arange(len(bboxes)).reshape(-1, 1)], axis=-1
         )
-        cls = results.cls
+        # cls = results.cls
 
         remain_inds = scores >= self.args.track_high_thresh
         inds_low = scores > self.args.track_low_thresh

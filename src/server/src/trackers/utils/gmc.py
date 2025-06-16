@@ -4,9 +4,9 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
-from src.utils import logger
+from src.utils import Logger
 
-logger = logger(__name__)
+logger = Logger(__name__)
 
 
 class GMC:

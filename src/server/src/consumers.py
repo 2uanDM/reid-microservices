@@ -16,7 +16,8 @@ from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 from src.apis import ModelServiceClient
 from src.schemas import EdgeDeviceMessage, PersonMetadata
-from src.utils.ops import crop_image, draw_bbox
+from src.trackers import BYTETracker, Namespace
+from src.utils.ops import crop_image, draw_bbox, xyxy2xywh
 
 console = Console()
 
@@ -53,6 +54,26 @@ class ReIdConsumer:
 
         # Initialize model client
         self.model_client = ModelServiceClient()
+
+        # Initialize tracker TODO: Handle multi cameras track id synchronization
+        self.byte_tracker = BYTETracker(
+            args=Namespace(
+                track_buffer=30,
+                track_high_thresh=0.25,  # first association threshold
+                track_low_thresh=0.1,  # second association threshold
+                match_thresh=0.8,  # matching threshold
+                fuse_score=True,  # whether to fuse confidence scores with the iou distances before matching
+                new_track_thresh=0.25,  # threshold for init new track if the detection does not match any tracks
+            )
+        )
+
+        # Video writer for creating output videos
+        self.video_writers = {}  # device_id -> cv2.VideoWriter
+        self.frame_size = None  # Will be set when first frame is processed
+
+        # Create output directories
+        os.makedirs("tracking_frames", exist_ok=True)
+        os.makedirs("tracking_videos", exist_ok=True)
 
     def init_kafka_consumer(self):
         """
@@ -193,13 +214,152 @@ class ReIdConsumer:
             for image, embedding, gender in zip(images, embeddings, genders)
         ]
 
+    def track(self, results: List[Tuple[int, EdgeDeviceMessage, List[PersonMetadata]]]):
+        """
+        Perform tracking logic for a list of person metadata
+
+        Args:
+            results: A list of tuples, each containing:
+                - idx: The index of the message in the original batch
+                - decoded_message: The decoded message from Kafka
+                - person_metadatas: A list of person metadata for each bounding box in the frame
+        """
+        for frame_idx, decoded_message, person_metadatas in results:
+            if decoded_message is None:
+                continue
+
+            print(f"Frame {decoded_message.frame_number}")
+
+            bboxes = np.array([x.bbox for x in decoded_message.result])
+            scores = np.array([x.confidence for x in decoded_message.result])
+            cls = np.array([x.class_id for x in decoded_message.result])
+
+            if len(bboxes) == 0:
+                print("No bounding boxes detected")
+                # Still need to process the frame for video continuity
+                self._save_frame_and_video(decoded_message, None, person_metadatas)
+                continue
+
+            tracking_results = self.byte_tracker.update(
+                scores=scores,
+                bboxes=bboxes,
+                cls=cls,
+            )
+
+            # Save frame with tracking visualization
+            self._save_frame_and_video(
+                decoded_message, tracking_results, person_metadatas
+            )
+
+    def _save_frame_and_video(
+        self,
+        decoded_message: EdgeDeviceMessage,
+        tracking_results: np.ndarray,
+        person_metadatas: List[PersonMetadata],
+    ):
+        """
+        Save frame with tracking visualization and add to video
+
+        Args:
+            decoded_message: The decoded message containing frame data
+            tracking_results: Numpy array with tracking results [x1, y1, x2, y2, track_id, score, cls, idx, state]
+            person_metadatas: List of person metadata for gender information
+        """
+        try:
+            # Convert image from bytes to numpy array
+            image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
+            image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+
+            if self.frame_size is None:
+                self.frame_size = (image.shape[1], image.shape[0])  # (width, height)
+
+            # Draw tracking results if available
+            if tracking_results is not None and len(tracking_results) > 0:
+                # Parse tracking results: [x1, y1, x2, y2, track_id, score, cls, idx, state]
+                bboxes = tracking_results[:, :4].tolist()  # [x, y, x, y]
+                track_ids = tracking_results[:, 4].astype(int).tolist()  # track_id
+                detection_confs = tracking_results[:, 5].tolist()  # score
+
+                # Convert bbox to xyxy
+                bboxes = [xyxy2xywh(bbox) for bbox in bboxes]
+
+                print(track_ids)
+
+                # Draw bounding boxes with tracking information
+                image = draw_bbox(
+                    image,
+                    bboxes=bboxes,
+                    detection_confs=detection_confs,
+                    ids=track_ids,
+                )
+
+            # Save individual frame
+            frame_filename = f"tracking_frames/{decoded_message.device_id}_frame_{decoded_message.frame_number:06d}.jpg"
+            cv2.imwrite(frame_filename, image)
+
+            # Add frame to video
+            self._add_frame_to_video(decoded_message.device_id, image)
+
+            console.log(f"Saved tracking frame: {frame_filename}")
+
+        except Exception as e:
+            console.log(f"[bold red]Error[/bold red] saving frame: {str(e)}")
+            console.log(traceback.format_exc())
+
+    def _add_frame_to_video(self, device_id: str, frame: np.ndarray):
+        """
+        Add frame to video writer for the specific device
+
+        Args:
+            device_id: Device identifier
+            frame: Frame to add to video
+        """
+        try:
+            if device_id not in self.video_writers:
+                # Create new video writer for this device
+                video_filename = f"tracking_videos/{device_id}_tracking.mp4"
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                fps = 30.0  # Default FPS
+
+                self.video_writers[device_id] = cv2.VideoWriter(
+                    video_filename, fourcc, fps, self.frame_size
+                )
+                console.log(
+                    f"Created video writer for device {device_id}: {video_filename}"
+                )
+
+            # Write frame to video
+            self.video_writers[device_id].write(frame)
+
+        except Exception as e:
+            console.log(f"[bold red]Error[/bold red] adding frame to video: {str(e)}")
+
+    def _finalize_videos(self):
+        """
+        Finalize and close all video writers
+        """
+        for device_id, writer in self.video_writers.items():
+            try:
+                writer.release()
+                console.log(f"Finalized video for device {device_id}")
+            except Exception as e:
+                console.log(
+                    f"[bold red]Error[/bold red] finalizing video for {device_id}: {str(e)}"
+                )
+
+        self.video_writers.clear()
+
     async def handle_incoming_message(self, messages):
         """
-        Handle incoming messages asynchronously, processing each frame in parallel while preserving order.
+        Handle the batch of messages from Kafka `reid_input` topic
+
+        Two steps:
+        1. Get person's metadata for each frame (all bounding boxes inside the frame). This process is async
+        2. Sort the results by the original timestamp of the frame
+        3. Iterate through the frames and perform tracking logic.
         """
         partition, msgs = list(messages.items())[0]
         console.log(f"Received batch: {len(msgs)} messages on partition {partition}")
-        os.makedirs("test", exist_ok=True)
 
         async def process_msg(idx, msg):
             try:
@@ -218,18 +378,18 @@ class ReIdConsumer:
                 # Get person metadata - now this is properly awaited within the async context
                 person_metadatas = await self.get_persons_metadata(person_images)
 
-                # Draw bounding boxes
-                image = draw_bbox(
-                    image,
-                    bboxes=[x.bbox for x in decoded_message.result],
-                    genders=[x.gender for x in person_metadatas],
-                    gender_confs=[x.gender_confidence for x in person_metadatas],
-                    detection_confs=[x.confidence for x in decoded_message.result],
-                )
+                # # Draw bounding boxes
+                # image = draw_bbox(
+                #     image,
+                #     bboxes=[x.bbox for x in decoded_message.result],
+                #     genders=[x.gender for x in person_metadatas],
+                #     gender_confs=[x.gender_confidence for x in person_metadatas],
+                #     detection_confs=[x.confidence for x in decoded_message.result],
+                # )
+                # cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
 
-                cv2.imwrite(f"test/frame_{decoded_message.frame_number}.jpg", image)
                 console.log(
-                    f"{decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
+                    f"STEP 1: {decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
                 )
                 # Return index and any result you want to keep for downstream tracking
                 return idx, decoded_message, person_metadatas
@@ -239,17 +399,18 @@ class ReIdConsumer:
                 console.log(traceback.format_exc())
                 return idx, None, None
 
-        # Launch all tasks concurrently, keeping track of their original order
+        # 1. Launch all tasks concurrently, keeping track of their original order
+        console.log("[bold cyan]Step 1: Async get person metadata[/bold cyan]")
         tasks = [process_msg(idx, msg) for idx, msg in enumerate(msgs)]
         results = await asyncio.gather(*tasks)
 
-        # Sort results by original index to preserve order
+        # 2. Sort results by original index to preserve order
+        console.log("[bold cyan]Step 2: Sort results by original index[/bold cyan]")
         results.sort(key=lambda x: x[0])
-        # Now results is a list of (idx, decoded_message, person_metadatas) in order
-        # You can continue your tracking code here using the ordered results
-        # For example:
-        # for idx, decoded_message, person_metadatas in results:
-        #     ... # tracking logic
+
+        # 3. Perform tracking logic
+        console.log("[bold cyan]Step 3: Perform tracking logic[/bold cyan]")
+        self.track(results)
 
     async def run_async(self):
         """
@@ -284,6 +445,7 @@ class ReIdConsumer:
                 console.log(traceback.format_exc())
             finally:
                 self.consumer.close()
+                self._finalize_videos()  # Ensure videos are properly finalized
                 console.log("[yellow]Consumer closed[/yellow]")
 
     def start(self):
