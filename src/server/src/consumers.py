@@ -390,21 +390,21 @@ class ReIdConsumer:
                                 f"   👥 Query gender: {person_metadata.gender} (confidence: {person_metadata.gender_confidence:.3f})"
                             )
 
-                            # Only perform database search if gender confidence is high
+                            # Get current storage state before search
+                            all_stored_ids = [
+                                int(key.replace(self.person_storage.prefix, ""))
+                                for key in self.person_storage._get_all_keys()
+                            ]
+
                             if (
                                 person_metadata.gender_confidence
                                 > self.gender_threshold
                             ):
-                                # Get current storage state before search
-                                all_stored_ids = [
-                                    int(key.replace(self.person_storage.prefix, ""))
-                                    for key in self.person_storage._get_all_keys()
-                                ]
                                 log_both(
                                     f"   🏪 IDs currently in storage: {all_stored_ids} - Exclude: {track_ids} - Similarity threshold: {self.similarity_threshold}"
                                 )
 
-                                # Search for similar person in database
+                                # Search for similar person in database with gender filtering
                                 matched_person, similarity = self.person_storage.search(
                                     current_person_id=current_person,
                                     current_frame_id=track_ids,  # Exclude current frame IDs from search
@@ -412,14 +412,26 @@ class ReIdConsumer:
                                 )
 
                                 log_both(
-                                    f"   🔍 Search result: matched_person={matched_person.id if matched_person else None}, similarity={similarity:.4f}"
+                                    f"   🔍 Search result with gender filtering: matched_person={matched_person.id if matched_person else None}, similarity={similarity:.4f}"
                                 )
                             else:
                                 log_both(
-                                    "   ⚠️ Low confidence gender - skipping database search"
+                                    f"   🏪 IDs currently in storage: {all_stored_ids} - Exclude: {track_ids} - Similarity threshold: {self.similarity_threshold} (NO gender filtering)"
                                 )
-                                matched_person = None
-                                similarity = -1.0
+                                log_both(
+                                    "   ⚠️ Low confidence gender - searching without gender filtering"
+                                )
+
+                                # Search without gender filtering when gender confidence is low
+                                matched_person, similarity = self.person_storage.search(
+                                    current_person_id=current_person,
+                                    current_frame_id=track_ids,  # Exclude current frame IDs from search
+                                    threshold=self.similarity_threshold,
+                                )
+
+                                log_both(
+                                    f"   🔍 Search result without gender filtering: matched_person={matched_person.id if matched_person else None}, similarity={similarity:.4f}"
+                                )
 
                             if matched_person is not None:
                                 filtering_applied = (
@@ -474,13 +486,6 @@ class ReIdConsumer:
                                 # Add to tracked IDs if not already present
                                 if matched_person.id not in self.tracked_ids:
                                     self.tracked_ids.append(matched_person.id)
-                            elif (
-                                person_metadata.gender_confidence
-                                < self.gender_threshold
-                            ):
-                                log_both(
-                                    f"Not matched person but gender confidence is low: {person_metadata.gender_confidence} --> Skip"
-                                )
                             else:
                                 # No match found - create new person
                                 log_both(
