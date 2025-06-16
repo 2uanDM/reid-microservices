@@ -52,20 +52,23 @@ class ReIdConsumer:
             self.schema = avro.schema.parse(f.read())
         self.reader = DatumReader(self.schema)
 
-        # Initialize model client
+        # Initialize service
         self.model_client = ModelServiceClient()
 
-        # Initialize tracker TODO: Handle multi cameras track id synchronization
+        # TODO: Handle multi cameras track id synchronization
         self.byte_tracker = BYTETracker(
             args=Namespace(
                 track_buffer=30,
-                track_high_thresh=0.25,  # first association threshold
-                track_low_thresh=0.1,  # second association threshold
-                match_thresh=0.8,  # matching threshold
+                track_high_thresh=0.7,  # first association threshold
+                track_low_thresh=0.35,  # second association threshold
+                match_thresh=0.3,  # matching threshold for linear assignment
                 fuse_score=True,  # whether to fuse confidence scores with the iou distances before matching
-                new_track_thresh=0.25,  # threshold for init new track if the detection does not match any tracks
+                new_track_thresh=0.8,  # threshold for init new track if the detection does not match any tracks
             )
         )
+
+        # Variables
+        self.tracked_ids = []  # Store tracked id
 
         # Video writer for creating output videos
         self.video_writers = {}  # device_id -> cv2.VideoWriter
@@ -230,81 +233,61 @@ class ReIdConsumer:
 
             print(f"Frame {decoded_message.frame_number}")
 
+            # Convert image from bytes to numpy array
+            image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
+            image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+
+            if self.frame_size is None:
+                self.frame_size = (
+                    image.shape[1],
+                    image.shape[0],
+                )  # (width, height)
+
             bboxes = np.array([x.bbox for x in decoded_message.result])
             scores = np.array([x.confidence for x in decoded_message.result])
             cls = np.array([x.class_id for x in decoded_message.result])
 
+            # No bboxes
             if len(bboxes) == 0:
-                print("No bounding boxes detected")
-                # Still need to process the frame for video continuity
-                self._save_frame_and_video(decoded_message, None, person_metadatas)
+                # Add frame to video
+                self._add_frame_to_video(decoded_message.device_id, image)
                 continue
 
+            # Has bboxes --> Perform tracking
             tracking_results = self.byte_tracker.update(
                 scores=scores,
                 bboxes=bboxes,
                 cls=cls,
             )
 
-            # Save frame with tracking visualization
-            self._save_frame_and_video(
-                decoded_message, tracking_results, person_metadatas
-            )
-
-    def _save_frame_and_video(
-        self,
-        decoded_message: EdgeDeviceMessage,
-        tracking_results: np.ndarray,
-        person_metadatas: List[PersonMetadata],
-    ):
-        """
-        Save frame with tracking visualization and add to video
-
-        Args:
-            decoded_message: The decoded message containing frame data
-            tracking_results: Numpy array with tracking results [x1, y1, x2, y2, track_id, score, cls, idx, state]
-            person_metadatas: List of person metadata for gender information
-        """
-        try:
-            # Convert image from bytes to numpy array
-            image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
-            image = cv2.imdecode(image, cv2.IMREAD_COLOR)
-
-            if self.frame_size is None:
-                self.frame_size = (image.shape[1], image.shape[0])  # (width, height)
-
-            # Draw tracking results if available
             if tracking_results is not None and len(tracking_results) > 0:
                 # Parse tracking results: [x1, y1, x2, y2, track_id, score, cls, idx, state]
-                bboxes = tracking_results[:, :4].tolist()  # [x, y, x, y]
+                bboxes_tracked = tracking_results[:, :4].tolist()  # [x, y, x, y]
                 track_ids = tracking_results[:, 4].astype(int).tolist()  # track_id
                 detection_confs = tracking_results[:, 5].tolist()  # score
 
-                # Convert bbox to xyxy
-                bboxes = [xyxy2xywh(bbox) for bbox in bboxes]
-
-                print(track_ids)
+                """
+                Here, we need to:
+                1. Find diff between track_ids and self.tracked_ids
+                2. Iterate through all persons_metadatas:
+                    - If id is not in diff: Save new feature to db
+                    - If id is in diff (unverified):
+                        + search for database
+                        + if most match --> update feature to db & remap tracker
+                        + if not match --> save new feature to db
+                """
 
                 # Draw bounding boxes with tracking information
+                bboxes_tracked = [xyxy2xywh(bbox) for bbox in bboxes_tracked]
                 image = draw_bbox(
                     image,
-                    bboxes=bboxes,
+                    bboxes=bboxes_tracked,
                     detection_confs=detection_confs,
                     ids=track_ids,
                 )
 
-            # Save individual frame
-            frame_filename = f"tracking_frames/{decoded_message.device_id}_frame_{decoded_message.frame_number:06d}.jpg"
-            cv2.imwrite(frame_filename, image)
-
-            # Add frame to video
-            self._add_frame_to_video(decoded_message.device_id, image)
-
-            console.log(f"Saved tracking frame: {frame_filename}")
-
-        except Exception as e:
-            console.log(f"[bold red]Error[/bold red] saving frame: {str(e)}")
-            console.log(traceback.format_exc())
+                # Add frame to video
+                self._add_frame_to_video(decoded_message.device_id, image)
 
     def _add_frame_to_video(self, device_id: str, frame: np.ndarray):
         """
