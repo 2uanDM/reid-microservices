@@ -195,6 +195,7 @@ def draw_bbox(
     gender_confs: List[float] = None,
     font_scale: float = 1,
     font_thickness: int = 2,
+    frame_number: int = None,
 ) -> np.ndarray:
     """
     Draw bounding boxes on an image with optional labels.
@@ -209,6 +210,7 @@ def draw_bbox(
         class_names (List[str], optional): List of class names corresponding to class_ids. If not provided, class_ids will be shown as numbers.
         font_scale (float, optional): Font scale for text labels. Defaults to 0.5.
         font_thickness (int, optional): Font thickness for text labels. Defaults to 1.
+        frame_number (int, optional): Frame number to display in top left corner for debugging.
 
     Returns:
         np.ndarray: Image with drawn bounding boxes and optional labels.
@@ -220,6 +222,44 @@ def draw_bbox(
 
     # Create a copy to avoid modifying the original image
     image_copy = image.copy()
+
+    # Draw frame number in top left corner for debugging
+    if frame_number is not None:
+        frame_text = f"Frame: {frame_number}"
+
+        # Use larger font for frame number
+        frame_font_scale = 1.2
+        frame_font_thickness = 3
+        frame_color = (0, 255, 255)  # Yellow color for visibility
+
+        # Get text size for background rectangle
+        (frame_text_width, frame_text_height), frame_baseline = cv2.getTextSize(
+            frame_text, cv2.FONT_HERSHEY_SIMPLEX, frame_font_scale, frame_font_thickness
+        )
+
+        # Position in top left corner with some padding
+        frame_x = 10
+        frame_y = 10 + frame_text_height
+
+        # Draw background rectangle for frame number
+        cv2.rectangle(
+            image_copy,
+            (frame_x - 5, frame_y - frame_text_height - 5),
+            (frame_x + frame_text_width + 5, frame_y + 5),
+            (0, 0, 0),  # Black background
+            -1,  # Filled rectangle
+        )
+
+        # Draw frame number text
+        cv2.putText(
+            image_copy,
+            frame_text,
+            (frame_x, frame_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            frame_font_scale,
+            frame_color,
+            frame_font_thickness,
+        )
 
     for i, bbox in enumerate(bboxes):
         # Convert float coordinates to integers and ensure they're within image bounds

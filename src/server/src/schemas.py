@@ -35,3 +35,16 @@ class PersonMetadata(BaseModel):
     gender_confidence: float
 
     model_config = dict(arbitrary_types_allowed=True)
+
+
+# Identity Storage
+class Embedding(BaseModel):
+    value: list[float]
+    detect_conf: float
+
+
+class Person(BaseModel):
+    id: int
+    first_embedding: Embedding | None
+    last_embedding: Embedding | None
+    top_k_embeddings: list[Embedding]

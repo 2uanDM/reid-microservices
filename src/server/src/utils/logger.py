@@ -20,7 +20,7 @@ class Logger:
 
         # File handler
         format_handler = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(pathname)s:%(lineno)d - %(funcName)s"
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         file_handler = logging.FileHandler(
             f"logs/{datetime.now().strftime('%Y-%m-%d')}.log"

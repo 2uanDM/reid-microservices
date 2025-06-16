@@ -16,6 +16,8 @@ dependencies = [
     "scipy>=1.15.3",
     "torch>=2.7.1",
     "lap>=0.5.12",
+    "redis>=6.2.0",
+    "scikit-learn>=1.7.0",
 ]
 
 [tool.uv.sources]

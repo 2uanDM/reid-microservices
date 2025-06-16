@@ -1,14 +1,20 @@
 version: '3.9'
 
 services:
-  qdrant:
-    container_name: reid-qdrant
-    image: qdrant/qdrant
-    restart: always
+  redis:
+    image: redis:latest
+    container_name: thesis-redis
     ports:
-      - ${QDRANT_PORT}:6333
+      - "6379:6379"
     volumes:
-      - reid-qdrant-data:/qdrant/storage:z
+      - redis_data:/data
+    networks:
+      -  kafka-net
+    restart: unless-stopped
 
 volumes:
-  reid-qdrant-data:
+  redis_data:
+
+networks:
+  kafka-net:
+    driver: bridge
