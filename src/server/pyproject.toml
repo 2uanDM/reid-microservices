@@ -7,11 +7,25 @@ requires-python = ">=3.11"
 dependencies = [
     "avro-python3>=1.10.2",
     "kafka-python>=2.2.7",
+    "markupsafe<3.0.0",
     "pydantic>=2.11.4",
     "python-dotenv>=1.1.0",
-    "requests>=2.32.3",
     "rich>=14.0.0",
+    "opencv-python>=4.8.0",
+    "httpx>=0.28.1",
+    "scipy>=1.15.3",
+    "torch>=2.7.1",
+    "lap>=0.5.12",
+    "redis>=6.2.0",
+    "scikit-learn>=1.7.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
 
 
 [dependency-groups]

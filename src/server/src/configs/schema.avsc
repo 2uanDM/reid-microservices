@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "EdgeDeviceMessage",
+  "namespace": "com.edge.device",
+  "fields": [
+    {"name": "device_id", "type": "string"},
+    {"name": "frame_number", "type": "long"},
+    {"name": "result", "type": {
+      "type": "array",
+      "items": {
+        "type": "record",
+        "name": "Detection",
+        "fields": [
+          {"name": "bbox", "type": {"type": "array", "items": "float"}},
+          {"name": "confidence", "type": "float"},
+          {"name": "class_id", "type": "int"}
+        ]
+      }
+    }},
+    {"name": "created_at", "type": "long"},
+    {"name": "image_data", "type": {"type": "bytes"}}
+  ]
+} 
