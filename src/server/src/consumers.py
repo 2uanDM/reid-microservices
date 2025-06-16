@@ -18,10 +18,7 @@ from src.apis import ModelServiceClient
 from src.embeddings import PersonID, RedisPersonIDsStorage
 from src.schemas import EdgeDeviceMessage, PersonMetadata
 from src.trackers import BYTETracker, Namespace
-from src.utils import Logger
 from src.utils.ops import crop_image, draw_bbox, xyxy2xywh
-
-logger = Logger(__name__)
 
 console = Console()
 
@@ -104,7 +101,7 @@ class ReIdConsumer:
                 track_low_thresh=0.35,  # second association threshold
                 match_thresh=0.3,  # matching threshold for linear assignment
                 fuse_score=True,  # whether to fuse confidence scores with the iou distances before matching
-                new_track_thresh=0.8,  # threshold for init new track if the detection does not match any tracks
+                new_track_thresh=0.85,  # threshold for init new track if the detection does not match any tracks
             )
         )
 
