@@ -262,21 +262,9 @@ class ReIdConsumer:
                 - decoded_message: The decoded message from Kafka
                 - person_metadatas: A list of person metadata for each bounding box in the frame
         """
-        log_both(f"\n{'=' * 80}")
-        log_both(
-            f"🚀 [bold cyan]STARTING BATCH PROCESSING[/bold cyan] - {len(results)} frames"
-        )
-        log_both(f"📝 Currently tracked IDs: {self.tracked_ids}")
-        log_both(f"🔢 Next global ID: {self.next_global_id}")
-        log_both(f"{'=' * 80}")
-
         for frame_idx, decoded_message, person_metadatas in results:
             if decoded_message is None:
                 continue
-
-            log_both(
-                f"🎬 [bold cyan]FRAME {decoded_message.frame_number}[/bold cyan] (Device: {decoded_message.device_id})"
-            )
 
             # Convert image from bytes to numpy array
             image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
@@ -290,11 +278,8 @@ class ReIdConsumer:
             scores = np.array([x.confidence for x in decoded_message.result])
             cls = np.array([x.class_id for x in decoded_message.result])
 
-            log_both(f"🔍 Detections in frame: {len(bboxes)} persons")
-
             # No bboxes
             if len(bboxes) == 0:
-                log_both("⚠️  No detections in frame, writing empty frame to video")
                 image = draw_bbox(
                     image,
                     bboxes=[],
@@ -334,12 +319,13 @@ class ReIdConsumer:
                 new_ids = [x for x in track_ids if x not in self.tracked_ids]
                 existing_ids = [x for x in track_ids if x in self.tracked_ids]
 
-                log_both(f"🆕 New/Unverified IDs: {new_ids}")
-                log_both(f"✅ Existing/Verified IDs: {existing_ids}")
-                log_both(f"📝 Currently tracked IDs: {self.tracked_ids}")
-                log_both(
-                    f"🏪 Total persons in storage: {len(self.person_storage._get_all_ids())}"
-                )
+                if new_ids != []:
+                    log_both(f"New/Unverified IDs: {new_ids}")
+                    log_both(f"Existing/Verified IDs: {existing_ids}")
+                    log_both(f"Currently tracked IDs: {self.tracked_ids}")
+                    log_both(
+                        f"Total persons in storage: {len(self.person_storage._get_all_ids())}"
+                    )
 
                 # Initialize lists to collect gender information for drawing
                 genders = []
@@ -349,24 +335,9 @@ class ReIdConsumer:
                 for i, (bbox, track_id, detection_conf, det_idx) in enumerate(
                     zip(bboxes_tracked, track_ids, detection_confs, detection_indices)
                 ):
-                    log_both(
-                        f"\n👤 Processing person {i + 1}/{len(track_ids)}: Track ID {track_id}"
-                    )
-                    log_both(
-                        f"   📦 Bbox: [{bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f}]"
-                    )
-                    log_both(f"   🎯 Detection Confidence: {detection_conf:.3f}")
-                    log_both(f"   📍 Detection index: {det_idx}")
-
                     # Get the corresponding person metadata
                     if det_idx < len(person_metadatas):
                         person_metadata = person_metadatas[det_idx]
-                        log_both(
-                            f"   👥 Gender: {person_metadata.gender} ({person_metadata.gender_confidence:.3f})"
-                        )
-                        log_both(
-                            f"   🧬 Embedding shape: {len(person_metadata.embedding)}"
-                        )
 
                         # Collect gender information for drawing
                         genders.append(person_metadata.gender)
@@ -382,28 +353,10 @@ class ReIdConsumer:
                         )
 
                         if track_id in new_ids:
-                            # This is a new/unverified track ID
-                            log_both(
-                                f"   🔍 [bold yellow]UNVERIFIED ID {track_id}[/bold yellow]"
-                            )
-                            log_both(
-                                f"   👥 Query gender: {person_metadata.gender} (confidence: {person_metadata.gender_confidence:.3f})"
-                            )
-
-                            # Get current storage state before search
-                            all_stored_ids = [
-                                int(key.replace(self.person_storage.prefix, ""))
-                                for key in self.person_storage._get_all_keys()
-                            ]
-
                             if (
                                 person_metadata.gender_confidence
                                 > self.gender_threshold
                             ):
-                                log_both(
-                                    f"   🏪 IDs currently in storage: {all_stored_ids} - Exclude: {track_ids} - Similarity threshold: {self.similarity_threshold}"
-                                )
-
                                 # Search for similar person in database with gender filtering
                                 matched_person, similarity = self.person_storage.search(
                                     current_person_id=current_person,
@@ -411,17 +364,7 @@ class ReIdConsumer:
                                     threshold=self.similarity_threshold,
                                 )
 
-                                log_both(
-                                    f"   🔍 Search result with gender filtering: matched_person={matched_person.id if matched_person else None}, similarity={similarity:.4f}"
-                                )
                             else:
-                                log_both(
-                                    f"   🏪 IDs currently in storage: {all_stored_ids} - Exclude: {track_ids} - Similarity threshold: {self.similarity_threshold} (NO gender filtering)"
-                                )
-                                log_both(
-                                    "   ⚠️ Low confidence gender - searching without gender filtering"
-                                )
-
                                 # Search without gender filtering when gender confidence is low
                                 matched_person, similarity = self.person_storage.search(
                                     current_person_id=current_person,
@@ -429,33 +372,12 @@ class ReIdConsumer:
                                     threshold=self.similarity_threshold,
                                 )
 
-                                log_both(
-                                    f"   🔍 Search result without gender filtering: matched_person={matched_person.id if matched_person else None}, similarity={similarity:.4f}"
-                                )
-
                             if matched_person is not None:
-                                filtering_applied = (
-                                    person_metadata.gender_confidence
-                                    > self.gender_threshold
-                                    and matched_person.gender_confidence
-                                    > self.gender_threshold
-                                )
-                                if filtering_applied:
-                                    log_both(
-                                        f"   🎯 Gender match confirmed with filtering: {matched_person.gender} ({matched_person.gender_confidence:.3f}) == {person_metadata.gender} ({person_metadata.gender_confidence:.3f})"
-                                    )
-                                else:
-                                    log_both(
-                                        f"   🎯 Match found without gender filtering: {matched_person.gender} ({matched_person.gender_confidence:.3f}) vs {person_metadata.gender} ({person_metadata.gender_confidence:.3f})"
-                                    )
                                 log_both(
-                                    f"   🎯 [bold green]RE-IDENTIFIED![/bold green] Track ID {track_id} → Person ID {matched_person.id}"
+                                    f"[bold green]RE-IDENTIFIED![/bold green] Track ID {track_id} → Person ID {matched_person.id}"
                                 )
                                 log_both(
-                                    f"   📊 Similarity: {similarity:.4f} (threshold: {self.similarity_threshold})"
-                                )
-                                log_both(
-                                    f"   🔄 Remapping BYTETracker ID {track_id} → {matched_person.id}"
+                                    f"Remapping BYTETracker ID {track_id} → {matched_person.id}"
                                 )
 
                                 # Update the matched person with new embedding
@@ -466,14 +388,7 @@ class ReIdConsumer:
                                     frame_number=decoded_message.frame_number,
                                 )
                                 if embedding_updated:
-                                    log_both(
-                                        f"   🔄 [bold green]EMBEDDING UPDATED![/bold green] New confidence {detection_conf:.3f} > stored {old_confidence:.3f}"
-                                    )
                                     self.person_storage.update(matched_person)
-                                else:
-                                    log_both(
-                                        f"   🔒 [bold yellow]EMBEDDING KEPT[/bold yellow] Stored confidence {old_confidence:.3f} >= new {detection_conf:.3f}"
-                                    )
 
                                 # Remap the tracker ID to use the existing global ID
                                 self.remap_bytetracker_ids(
@@ -488,20 +403,16 @@ class ReIdConsumer:
                                     self.tracked_ids.append(matched_person.id)
                             else:
                                 # No match found - create new person
+                                log_both("[bold cyan]NEW PERSON CREATED![/bold cyan]")
                                 log_both(
-                                    "   🆕 [bold cyan]NEW PERSON CREATED![/bold cyan]"
-                                )
-                                log_both(
-                                    f"   👥 Creating new person with gender: {person_metadata.gender} (confidence: {person_metadata.gender_confidence:.3f})"
+                                    f"Creating new person with gender: {person_metadata.gender} (confidence: {person_metadata.gender_confidence:.3f})"
                                 )
 
                                 # Get next global ID
                                 global_id = self._get_next_global_id()
                                 current_person.set_id(global_id)
 
-                                log_both(
-                                    f"   🆔 [bold green]ASSIGNED GLOBAL ID: {global_id}[/bold green]"
-                                )
+                                log_both(f"Assigned Global ID: {global_id}")
 
                                 # Update embedding for the new person
                                 embedding_updated = current_person.update_embedding(
@@ -509,15 +420,9 @@ class ReIdConsumer:
                                     body_score=detection_conf,
                                     frame_number=decoded_message.frame_number,
                                 )
-                                log_both(
-                                    f"   🔄 [bold green]NEW PERSON EMBEDDING SET![/bold green] Confidence: {detection_conf:.3f}"
-                                )
 
                                 # Add to storage
                                 self.person_storage.add(current_person)
-                                log_both(
-                                    f"   💾 [bold green]ADDED TO STORAGE![/bold green] Person {global_id}"
-                                )
 
                                 # Remap track ID to global ID
                                 self.remap_bytetracker_ids(
@@ -532,61 +437,36 @@ class ReIdConsumer:
                                     self.tracked_ids.append(global_id)
 
                                 log_both(
-                                    f"   🔄 [bold green]REMAPPED![/bold green] Track ID {track_id} → Global ID {global_id}"
+                                    f"Remapped: Track ID {track_id} → Global ID {global_id}"
                                 )
                         else:
                             # This is an existing tracked person - update their embedding
-                            log_both(
-                                f"   ✅ [bold green]EXISTING PERSON[/bold green] Track ID {track_id}"
-                            )
+                            log_both(f"Existing Person: Track ID {track_id}")
                             existing_person = self.person_storage.get_person_by_id(
                                 track_id
                             )
                             if existing_person is not None:
-                                log_both(
-                                    f"   🔄 Checking embedding update for existing person {track_id}"
-                                )
-                                old_confidence = existing_person.body_conf
                                 embedding_updated = existing_person.update_embedding(
                                     new_embedding=np.array(person_metadata.embedding),
                                     body_score=detection_conf,
                                     frame_number=decoded_message.frame_number,
                                 )
                                 if embedding_updated:
-                                    log_both(
-                                        f"   🔄 [bold green]EMBEDDING UPDATED![/bold green] New confidence {detection_conf:.3f} > stored {old_confidence:.3f}"
-                                    )
                                     self.person_storage.update(existing_person)
-                                else:
-                                    log_both(
-                                        f"   🔒 [bold yellow]EMBEDDING KEPT[/bold yellow] Stored confidence {old_confidence:.3f} >= new {detection_conf:.3f}"
-                                    )
                             else:
-                                # Person not found in storage - treat as new
-                                log_both(
-                                    f"   ⚠️  [bold red]ERROR![/bold red] Person {track_id} not found in storage, treating as new"
-                                )
                                 current_person.set_id(track_id)
                                 embedding_updated = current_person.update_embedding(
                                     new_embedding=np.array(person_metadata.embedding),
                                     body_score=detection_conf,
                                     frame_number=decoded_message.frame_number,
                                 )
-                                log_both(
-                                    f"   🔄 [bold green]EMERGENCY PERSON EMBEDDING SET![/bold green] Confidence: {detection_conf:.3f}"
-                                )
                                 self.person_storage.add(current_person)
                     else:
                         log_both(
-                            f"   ❌ [bold red]ERROR![/bold red] Detection index {det_idx} >= person_metadatas length {len(person_metadatas)}"
+                            f"[bold red]ERROR![/bold red] Detection index {det_idx} >= person_metadatas length {len(person_metadatas)}"
                         )
 
-                log_both(
-                    f"\n🎬 Frame {decoded_message.frame_number} processing complete:"
-                )
-                log_both(f"   🏷️  Final track IDs: {track_ids}")
-                log_both(f"   📝 Currently tracked IDs: {self.tracked_ids}")
-                log_both(f"   🔢 Next global ID: {self.next_global_id}")
+                log_both(f"\nFrame {decoded_message.frame_number} done")
 
                 # Add frame to video with updated track IDs
                 bboxes_tracked = [xyxy2xywh(bbox) for bbox in bboxes_tracked]
@@ -601,9 +481,6 @@ class ReIdConsumer:
                     frame_number=decoded_message.frame_number,
                 )
                 self._add_frame_to_video(decoded_message.device_id, image)
-                log_both(
-                    f"   🎥 Added frame to video for device {decoded_message.device_id}"
-                )
             else:
                 # Draw frame number even when no tracking results
                 image = draw_bbox(
@@ -615,21 +492,10 @@ class ReIdConsumer:
 
     def _get_next_global_id(self) -> int:
         """Get the next available global ID"""
-        original_id = self.next_global_id
         while self.person_storage.get_person_by_id(self.next_global_id) is not None:
-            log_both(
-                f"      🔍 Global ID {self.next_global_id} already exists, incrementing..."
-            )
             self.next_global_id += 1
         current_id = self.next_global_id
         self.next_global_id += 1
-
-        if current_id != original_id:
-            log_both(
-                f"      🆔 Global ID assignment: {original_id} → {current_id} (skipped {current_id - original_id} used IDs)"
-            )
-        else:
-            log_both(f"      🆔 Global ID assignment: {current_id}")
 
         return current_id
 
@@ -651,9 +517,6 @@ class ReIdConsumer:
                 self.video_writers[device_id] = cv2.VideoWriter(
                     video_filename, fourcc, fps, self.frame_size
                 )
-                log_both(
-                    f"Created video writer for device {device_id}: {video_filename}"
-                )
 
             # Write frame to video
             self.video_writers[device_id].write(frame)
@@ -663,10 +526,6 @@ class ReIdConsumer:
 
     def remap_bytetracker_ids(self, bytetracker: BYTETracker, old_id: int, new_id: int):
         """Remap a track ID in BYTETracker from old_id to new_id."""
-        log_both(
-            f"      🔄 [bold magenta]REMAPPING[/bold magenta] BYTETracker ID: {old_id} → {new_id}"
-        )
-
         remapped = False
 
         # Check tracked_stracks
@@ -691,7 +550,7 @@ class ReIdConsumer:
                 break
 
         if remapped:
-            log_both(f"      ✅ Successfully remapped {old_id} → {new_id}")
+            log_both(f"Successfully remapped {old_id} → {new_id}")
 
     def _finalize_videos(self):
         """
@@ -700,7 +559,6 @@ class ReIdConsumer:
         for device_id, writer in self.video_writers.items():
             try:
                 writer.release()
-                log_both(f"Finalized video for device {device_id}")
             except Exception as e:
                 log_both(
                     f"[bold red]Error[/bold red] finalizing video for {device_id}: {str(e)}"
@@ -713,17 +571,10 @@ class ReIdConsumer:
         Cleanup and close log file
         """
         try:
-            log_both("=" * 80)
-            log_both(
-                f"📅 Session ended at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            log_both(f"🗂️  [bold green]Log file saved:[/bold green] {log_filename}")
-
             # Flush and close the log file
             if hasattr(self, "log_file") and self.log_file:
                 self.log_file.flush()
                 self.log_file.close()
-                print(f"✅ Debug logs saved to: {log_filename}")
         except Exception as e:
             print(f"Error closing log file: {e}")
 
