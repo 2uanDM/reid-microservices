@@ -18,4 +18,14 @@ export interface DeviceStreamProps {
   deviceId: string;
   frameData: FrameData | null;
   isConnected: boolean;
+  onReconnect: () => void;
+  fps: number;
+  onFpsChange: (fps: number) => void;
+}
+
+export interface FrameBuffer {
+  frames: FrameData[];
+  maxSize: number;
+  targetFps: number;
+  lastPlayTime: number;
 }
