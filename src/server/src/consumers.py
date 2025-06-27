@@ -2,42 +2,24 @@ import asyncio
 import io
 import os
 import time
-import traceback
 import uuid
-from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 import avro.schema
 import cv2
 import numpy as np
-from avro.io import BinaryDecoder, DatumReader
+from avro.io import BinaryDecoder, BinaryEncoder, DatumReader, DatumWriter
 from dotenv import load_dotenv
-from rich.console import Console
 
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, KafkaProducer
 from src.apis import ModelServiceClient
 from src.embeddings import PersonID, RedisPersonIDsStorage
-from src.schemas import EdgeDeviceMessage, PersonMetadata
+from src.schemas import EdgeDeviceMessage, PersonMetadata, ProcessedFrameMessage
 from src.trackers import BYTETracker, Namespace
+from src.utils import Logger
 from src.utils.ops import crop_image, draw_bbox, xyxy2xywh
 
-console = Console()
-
-# Create logs directory if it doesn't exist
-os.makedirs("logs", exist_ok=True)
-
-# Create a file console for logging
-log_filename = f"logs/reid_consumer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-file_console = None  # Will be set in ReIdConsumer.__init__
-
-
-def log_both(message: str):
-    """Log message to both console and file"""
-    verbose = os.getenv("VERBOSE", "true").lower() == "true"
-    if verbose:
-        console.log(message)
-        if file_console:
-            file_console.log(message)
+logger = Logger(__name__)
 
 
 load_dotenv()
@@ -45,17 +27,8 @@ load_dotenv()
 
 class ReIdConsumer:
     def __init__(self):
-        self.reid_model = os.getenv("EMBEDDING_MODEL", "osnet")
-
-        # Log file setup
-        self.log_file = open(log_filename, "w", encoding="utf-8")
-        self.file_console = Console(file=self.log_file, width=120)
-
-        # Update the global file_console to use this instance
-        global file_console
-        file_console = self.file_console
-
         # Environment variables
+        self.reid_model = os.getenv("EMBEDDING_MODEL", "osnet")
         self.feature_extraction_url = os.getenv(
             "FEATURE_EXTRACTION_URL", "http://localhost:8000/embedding"
         )
@@ -79,10 +52,15 @@ class ReIdConsumer:
         self.similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.7))
         self.gender_threshold = float(os.getenv("GENDER_THRESHOLD", 0.9))
 
-        # Load Avro schema
-        with open("src/configs/schema.avsc", "r") as f:
+        # Load input schema for consuming from reid_input topic
+        with open("src/configs/input.avsc", "r") as f:
             self.schema = avro.schema.parse(f.read())
         self.reader = DatumReader(self.schema)
+
+        # Load output schema for producing to reid_output topic
+        with open("src/configs/output.avsc", "r") as f:
+            self.output_schema = avro.schema.parse(f.read())
+        self.output_writer = DatumWriter(self.output_schema)
 
         # Initialize service
         self.model_client = ModelServiceClient()
@@ -95,7 +73,6 @@ class ReIdConsumer:
         )
         self.person_storage.clear()
 
-        # TODO: Handle multi cameras track id synchronization
         self.byte_tracker = BYTETracker(
             args=Namespace(
                 track_buffer=30,
@@ -111,12 +88,8 @@ class ReIdConsumer:
         self.tracked_ids = []  # Store tracked id
         self.next_global_id = 1  # Global ID counter for new persons
 
-        # Video writer for creating output videos
-        self.video_writers = {}  # device_id -> cv2.VideoWriter
+        # Frame size for processing
         self.frame_size = None  # Will be set when first frame is processed
-
-        # Create output directories
-        os.makedirs("tracking_videos", exist_ok=True)
 
     def init_kafka_consumer(self):
         """
@@ -146,23 +119,51 @@ class ReIdConsumer:
             # Verify consumer is properly subscribed
             topics = self.consumer.topics()
             if self.input_topic_name not in topics:
-                log_both(
-                    f"[bold red]Error:[/bold red] Topic {self.input_topic_name} not found in Kafka"
-                )
+                logger.error(f"Topic {self.input_topic_name} not found in Kafka")
                 return False
-        except Exception as e:
-            log_both(
-                f"[bold red]Error[/bold red] when initializing Kafka Consumer: {str(e)}"
-            )
-            log_both(traceback.format_exc())
+        except Exception:
+            logger.error("Error when initializing Kafka Consumer", exc_info=True)
             return False
         else:
-            log_both(
-                "[bold cyan]Kafka Consumer[/bold cyan] initialized [bold green]successfully[/bold green] :vampire:"
-            )
+            logger.info("Kafka Consumer initialized successfully")
             return True
 
-    def _decode_message(self, message_value: bytes) -> EdgeDeviceMessage:
+    def init_kafka_producer(self):
+        """
+        Initialize the Kafka producer for sending processed frames to reid_output topic
+        """
+        try:
+            self.producer = KafkaProducer(
+                client_id=f"{self.client_id}-producer",
+                bootstrap_servers=self.kafka_bootstrap_servers,
+                key_serializer=lambda x: x.encode("utf-8"),  # Device ID as key
+                value_serializer=self.serialize_output_message,  # Serialize using output schema
+                linger_ms=10,
+                batch_size=16384,
+                acks=1,
+                max_in_flight_requests_per_connection=5,
+                max_request_size=100 * 1024 * 1024,  # 100MB for large images
+            )
+            logger.info("Kafka Producer initialized successfully")
+            return True
+        except Exception:
+            logger.error("Error when initializing Kafka Producer", exc_info=True)
+            return False
+
+    def serialize_output_message(self, message: dict) -> bytes:
+        """
+        Serialize output message using Avro schema for reid_output topic
+        """
+        try:
+            bytes_writer = io.BytesIO()
+            encoder = BinaryEncoder(bytes_writer)
+            self.output_writer.write(message, encoder)
+            return bytes_writer.getvalue()
+        except Exception:
+            logger.error("Error serializing output message")
+            raise Exception("Error serializing output message")
+
+    def decode_input_message(self, message_value: bytes) -> EdgeDeviceMessage:
         """
         Decode Avro message into Pydantic model
         """
@@ -173,17 +174,6 @@ class ReIdConsumer:
     async def _get_embedding(
         self, images: List[Tuple[int, bytes]]
     ) -> List[List[float]]:
-        """
-        Get embeddings for a list of images
-
-        Sample return:
-        ```
-        [
-            [float],
-            ...
-        ]
-        ```
-        """
         tasks = [
             self.model_client.extract_features(
                 img,
@@ -202,17 +192,6 @@ class ReIdConsumer:
     async def _get_genders(
         self, images: List[Tuple[int, bytes]]
     ) -> List[Dict[str, Any]]:
-        """
-        Get genders for a list of images
-
-        Sample return:
-        ```
-        [
-            {"gender": "male", "confidence": 0.95},
-            ...
-        ]
-        ```
-        """
         tasks = [
             self.model_client.classify_gender(img, original_idx)
             for original_idx, img in images
@@ -263,7 +242,7 @@ class ReIdConsumer:
                 - decoded_message: The decoded message from Kafka
                 - person_metadatas: A list of person metadata for each bounding box in the frame
         """
-        for frame_idx, decoded_message, person_metadatas in results:
+        for _, decoded_message, person_metadatas in results:
             if decoded_message is None:
                 continue
 
@@ -272,8 +251,7 @@ class ReIdConsumer:
             image = cv2.imdecode(image, cv2.IMREAD_COLOR)
 
             if self.frame_size is None:
-                # w x h
-                self.frame_size = (image.shape[1], image.shape[0])
+                self.frame_size = (image.shape[1], image.shape[0])  # w x h
 
             bboxes = np.array([x.bbox for x in decoded_message.result])
             scores = np.array([x.confidence for x in decoded_message.result])
@@ -286,7 +264,7 @@ class ReIdConsumer:
                     bboxes=[],
                     frame_number=decoded_message.frame_number,
                 )
-                self._add_frame_to_video(decoded_message.device_id, image)
+                self._produce_processed_frame(decoded_message, image, [])
                 continue
 
             # Has bboxes --> Perform tracking
@@ -318,15 +296,9 @@ class ReIdConsumer:
 
                 # Get unverified ids (new ids)
                 new_ids = [x for x in track_ids if x not in self.tracked_ids]
-                existing_ids = [x for x in track_ids if x in self.tracked_ids]
 
                 if new_ids != []:
-                    log_both(f"New/Unverified IDs: {new_ids}")
-                    log_both(f"Existing/Verified IDs: {existing_ids}")
-                    log_both(f"Currently tracked IDs: {self.tracked_ids}")
-                    log_both(
-                        f"Total persons in storage: {len(self.person_storage._get_all_ids())}"
-                    )
+                    logger.info(f"New/Unverified IDs: {new_ids}")
 
                 # Initialize lists to collect gender information for drawing
                 genders = []
@@ -374,11 +346,8 @@ class ReIdConsumer:
                                 )
 
                             if matched_person is not None:
-                                log_both(
-                                    f"[bold green]RE-IDENTIFIED![/bold green] Track ID {track_id} → Person ID {matched_person.id}"
-                                )
-                                log_both(
-                                    f"Remapping BYTETracker ID {track_id} → {matched_person.id}"
+                                logger.info(
+                                    f"RE-IDENTIFIED! Track ID {track_id} → Person ID {matched_person.id}"
                                 )
 
                                 # Update the matched person with new embedding
@@ -403,8 +372,8 @@ class ReIdConsumer:
                                     self.tracked_ids.append(matched_person.id)
                             else:
                                 # No match found - create new person
-                                log_both("[bold cyan]NEW PERSON CREATED![/bold cyan]")
-                                log_both(
+                                logger.info("NEW PERSON CREATED!")
+                                logger.info(
                                     f"Creating new person with gender: {person_metadata.gender} (confidence: {person_metadata.gender_confidence:.3f})"
                                 )
 
@@ -412,7 +381,7 @@ class ReIdConsumer:
                                 global_id = self._get_next_global_id()
                                 current_person.set_id(global_id)
 
-                                log_both(f"Assigned Global ID: {global_id}")
+                                logger.info(f"Assigned Global ID: {global_id}")
 
                                 # Update embedding for the new person
                                 embedding_updated = current_person.update_embedding(
@@ -436,7 +405,7 @@ class ReIdConsumer:
                                 if global_id not in self.tracked_ids:
                                     self.tracked_ids.append(global_id)
 
-                                log_both(
+                                logger.info(
                                     f"Remapped: Track ID {track_id} → Global ID {global_id}"
                                 )
                         else:
@@ -461,8 +430,8 @@ class ReIdConsumer:
                                 )
                                 self.person_storage.add(current_person)
                     else:
-                        log_both(
-                            f"[bold red]ERROR![/bold red] Detection index {det_idx} >= person_metadatas length {len(person_metadatas)}"
+                        logger.error(
+                            f"ERROR! Detection index {det_idx} >= person_metadatas length {len(person_metadatas)}"
                         )
 
                 # Add frame to video with updated track IDs
@@ -477,7 +446,25 @@ class ReIdConsumer:
                     gender_confs=gender_confs,
                     frame_number=decoded_message.frame_number,
                 )
-                self._add_frame_to_video(decoded_message.device_id, image)
+
+                # Create tracked persons data
+                tracked_persons = []
+                for bbox, track_id, detection_conf, gender, gender_conf in zip(
+                    bboxes_tracked, track_ids, detection_confs, genders, gender_confs
+                ):
+                    tracked_persons.append(
+                        {
+                            "person_id": int(track_id),
+                            "bbox": bbox.tolist()
+                            if isinstance(bbox, np.ndarray)
+                            else bbox,
+                            "confidence": float(detection_conf),
+                            "gender": str(gender),
+                            "gender_confidence": float(gender_conf),
+                        }
+                    )
+
+                self._produce_processed_frame(decoded_message, image, tracked_persons)
             else:
                 # Draw frame number even when no tracking results
                 image = draw_bbox(
@@ -485,7 +472,7 @@ class ReIdConsumer:
                     bboxes=[],
                     frame_number=decoded_message.frame_number,
                 )
-                self._add_frame_to_video(decoded_message.device_id, image)
+                self._produce_processed_frame(decoded_message, image, [])
 
     def _get_next_global_id(self) -> int:
         """Get the next available global ID"""
@@ -496,30 +483,46 @@ class ReIdConsumer:
 
         return current_id
 
-    def _add_frame_to_video(self, device_id: str, frame: np.ndarray):
+    def _produce_processed_frame(
+        self,
+        decoded_message: EdgeDeviceMessage,
+        image: np.ndarray,
+        tracked_persons: List[Dict[str, Any]],
+    ):
         """
-        Add frame to video writer for the specific device
+        Produce processed frame to reid_output topic
 
         Args:
-            device_id: Device identifier
-            frame: Frame to add to video
+            decoded_message: The decoded message from Kafka
+            image: The processed image
+            tracked_persons: A list of dictionaries containing tracked person information
         """
         try:
-            if device_id not in self.video_writers:
-                # Create new video writer for this device
-                video_filename = f"tracking_videos/{device_id}_tracking.mp4"
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                fps = 30.0  # Default FPS
+            # Encode processed image to bytes
+            _, img_bytes = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            img_bytes = img_bytes.tobytes()
 
-                self.video_writers[device_id] = cv2.VideoWriter(
-                    video_filename, fourcc, fps, self.frame_size
-                )
+            # Create message for reid_output topic - must match output_schema.avsc exactly
+            output_message = {
+                "device_id": decoded_message.device_id,
+                "frame_number": decoded_message.frame_number,
+                "tracked_persons": tracked_persons,
+                "created_at": decoded_message.created_at,
+                "image_data": img_bytes,
+            }
 
-            # Write frame to video
-            self.video_writers[device_id].write(frame)
+            # Validate message
+            ProcessedFrameMessage(**output_message)
 
-        except Exception as e:
-            log_both(f"[bold red]Error[/bold red] adding frame to video: {str(e)}")
+            # Send to reid_output topic
+            self.producer.send(
+                self.output_topic_name,
+                key=decoded_message.device_id,
+                value=output_message,
+            )
+
+        except Exception:
+            logger.error("Error producing processed frame", exc_info=True)
 
     def remap_bytetracker_ids(self, bytetracker: BYTETracker, old_id: int, new_id: int):
         """Remap a track ID in BYTETracker from old_id to new_id."""
@@ -547,33 +550,7 @@ class ReIdConsumer:
                 break
 
         if remapped:
-            log_both(f"Successfully remapped {old_id} → {new_id}")
-
-    def _finalize_videos(self):
-        """
-        Finalize and close all video writers
-        """
-        for device_id, writer in self.video_writers.items():
-            try:
-                writer.release()
-            except Exception as e:
-                log_both(
-                    f"[bold red]Error[/bold red] finalizing video for {device_id}: {str(e)}"
-                )
-
-        self.video_writers.clear()
-
-    def _cleanup_logging(self):
-        """
-        Cleanup and close log file
-        """
-        try:
-            # Flush and close the log file
-            if hasattr(self, "log_file") and self.log_file:
-                self.log_file.flush()
-                self.log_file.close()
-        except Exception as e:
-            print(f"Error closing log file: {e}")
+            logger.info(f"Successfully remapped {old_id} -> {new_id}")
 
     async def handle_incoming_message(self, messages):
         """
@@ -585,14 +562,14 @@ class ReIdConsumer:
         3. Iterate through the frames and perform tracking logic.
         """
         partition, msgs = list(messages.items())[0]
-        log_both(
+        logger.info(
             f"Received batch: {len(msgs)} messages on partition {partition.partition}"
         )
 
         async def process_msg(idx, msg):
             try:
                 # Decode the message from bytes
-                decoded_message = self._decode_message(msg.value)
+                decoded_message = self.decode_input_message(msg.value)
 
                 # Convert image from bytes to numpy array (4ms average - 300KB for Full HD Image)
                 image = np.frombuffer(decoded_message.image_data, dtype=np.uint8)
@@ -609,11 +586,8 @@ class ReIdConsumer:
                 # Return index and any result you want to keep for downstream tracking
                 return idx, decoded_message, person_metadatas
 
-            except Exception as e:
-                console.print(
-                    f"[bold red]Error[/bold red] processing message: {str(e)}"
-                )
-                console.print(traceback.format_exc())
+            except Exception:
+                logger.error("Error processing message", exc_info=True)
                 return idx, None, None
 
         # 1. Launch all tasks concurrently, keeping track of their original order
@@ -622,7 +596,7 @@ class ReIdConsumer:
         results = await asyncio.gather(*tasks)
         end_time = time.time()
         frame_numbers = [x[1].frame_number for x in results]
-        console.print(
+        logger.info(
             f"Step 1: Async get person metadata from {min(frame_numbers)} to {max(frame_numbers)}  - Time taken: {end_time - start_time:.2f} seconds"
         )
 
@@ -633,7 +607,7 @@ class ReIdConsumer:
         start_time = time.time()
         self.track(results)
         end_time = time.time()
-        console.print(
+        logger.info(
             f"Step 2: Perform tracking logic from {min(frame_numbers)} to {max(frame_numbers)}  - Time taken: {end_time - start_time:.2f} seconds"
         )
 
@@ -644,10 +618,14 @@ class ReIdConsumer:
         if not self.init_kafka_consumer():
             return
 
-        console.print(
-            f"[bold cyan]Starting consumer[/bold cyan] ({self.client_id}) for topic: {self.input_topic_name}"
+        if not self.init_kafka_producer():
+            return
+
+        logger.info(
+            f"Starting consumer ({self.client_id}) for topic: {self.input_topic_name}"
         )
-        console.print(f"Consumer group: {self.consumer_group}")
+        logger.info(f"Consumer group: {self.consumer_group}")
+        logger.info(f"Output topic: {self.output_topic_name}")
 
         # Initialize the model client's HTTP client
         async with self.model_client:
@@ -660,18 +638,16 @@ class ReIdConsumer:
                     if messages:
                         await self.handle_incoming_message(messages)
                     else:
-                        console.print("[yellow]No messages received[/yellow]")
+                        logger.warning("No messages received")
                         await asyncio.sleep(0.5)
             except KeyboardInterrupt:
-                console.print("[yellow]Shutting down consumer...[/yellow]")
-            except Exception as e:
-                console.print(f"[bold red]Error in consumer loop:[/bold red] {str(e)}")
-                console.print(traceback.format_exc())
+                logger.info("Shutting down consumer...")
+            except Exception:
+                logger.error("Error in consumer loop", exc_info=True)
             finally:
                 self.consumer.close()
-                self._finalize_videos()  # Ensure videos are properly finalized
-                console.print("[yellow]Consumer closed[/yellow]")
-                self._cleanup_logging()
+                self.producer.flush()
+                self.producer.close()
 
     def start(self):
         """

@@ -1,0 +1,25 @@
+{
+  "type": "record",
+  "name": "ProcessedFrameMessage",
+  "namespace": "com.output",
+  "fields": [
+    {"name": "device_id", "type": "string"},
+    {"name": "frame_number", "type": "long"},
+    {"name": "tracked_persons", "type": {
+      "type": "array",
+      "items": {
+        "type": "record",
+        "name": "TrackedPerson",
+        "fields": [
+          {"name": "person_id", "type": "int"},
+          {"name": "bbox", "type": {"type": "array", "items": "float"}},
+          {"name": "confidence", "type": "float"},
+          {"name": "gender", "type": "string"},
+          {"name": "gender_confidence", "type": "float"}
+        ]
+      }
+    }},
+    {"name": "created_at", "type": "long"},
+    {"name": "image_data", "type": {"type": "bytes"}}
+  ]
+} 

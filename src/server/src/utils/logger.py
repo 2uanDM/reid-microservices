@@ -15,7 +15,7 @@ class Logger:
         return cls._instances[name]
 
     def _setup_logger(self, name: str):
-        self.logger = logging.getLogger(f"cawin-{name}")
+        self.logger = logging.getLogger(f"thesis-{name}")
         self.logger.setLevel(logging.INFO)
 
         # File handler
