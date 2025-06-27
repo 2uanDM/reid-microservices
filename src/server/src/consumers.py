@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -381,7 +382,6 @@ class ReIdConsumer:
                                 )
 
                                 # Update the matched person with new embedding
-                                old_confidence = matched_person.body_conf
                                 embedding_updated = matched_person.update_embedding(
                                     new_embedding=np.array(person_metadata.embedding),
                                     body_score=detection_conf,
@@ -441,7 +441,6 @@ class ReIdConsumer:
                                 )
                         else:
                             # This is an existing tracked person - update their embedding
-                            log_both(f"Existing Person: Track ID {track_id}")
                             existing_person = self.person_storage.get_person_by_id(
                                 track_id
                             )
@@ -465,8 +464,6 @@ class ReIdConsumer:
                         log_both(
                             f"[bold red]ERROR![/bold red] Detection index {det_idx} >= person_metadatas length {len(person_metadatas)}"
                         )
-
-                log_both(f"\nFrame {decoded_message.frame_number} done")
 
                 # Add frame to video with updated track IDs
                 bboxes_tracked = [xyxy2xywh(bbox) for bbox in bboxes_tracked]
@@ -588,7 +585,9 @@ class ReIdConsumer:
         3. Iterate through the frames and perform tracking logic.
         """
         partition, msgs = list(messages.items())[0]
-        log_both(f"Received batch: {len(msgs)} messages on partition {partition}")
+        log_both(
+            f"Received batch: {len(msgs)} messages on partition {partition.partition}"
+        )
 
         async def process_msg(idx, msg):
             try:
@@ -607,9 +606,6 @@ class ReIdConsumer:
                 # Get person metadata - now this is properly awaited within the async context
                 person_metadatas = await self.get_persons_metadata(person_images)
 
-                console.print(
-                    f"{decoded_message.device_id} - Frame: {decoded_message.frame_number} Done"
-                )
                 # Return index and any result you want to keep for downstream tracking
                 return idx, decoded_message, person_metadatas
 
@@ -621,17 +617,25 @@ class ReIdConsumer:
                 return idx, None, None
 
         # 1. Launch all tasks concurrently, keeping track of their original order
-        console.print("[bold cyan]Step 1: Async get person metadata[/bold cyan]")
+        start_time = time.time()
         tasks = [process_msg(idx, msg) for idx, msg in enumerate(msgs)]
         results = await asyncio.gather(*tasks)
+        end_time = time.time()
+        frame_numbers = [x[1].frame_number for x in results]
+        console.print(
+            f"Step 1: Async get person metadata from {min(frame_numbers)} to {max(frame_numbers)}  - Time taken: {end_time - start_time:.2f} seconds"
+        )
 
         # 2. Sort results by original index to preserve order
-        console.print("[bold cyan]Step 2: Sort results by original index[/bold cyan]")
         results.sort(key=lambda x: x[0])
 
         # 3. Perform tracking logic
-        console.print("[bold cyan]Step 3: Perform tracking logic[/bold cyan]")
+        start_time = time.time()
         self.track(results)
+        end_time = time.time()
+        console.print(
+            f"Step 2: Perform tracking logic from {min(frame_numbers)} to {max(frame_numbers)}  - Time taken: {end_time - start_time:.2f} seconds"
+        )
 
     async def run_async(self):
         """
