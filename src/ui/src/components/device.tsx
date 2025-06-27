@@ -17,7 +17,7 @@ export function DeviceStream({
     const lastFrameTimeRef = useRef<number>(0);
     const [currentFrame, setCurrentFrame] = useState<FrameData | null>(null);
     const [bufferedFrames, setBufferedFrames] = useState<number>(0);
-    const [showSettings, setShowSettings] = useState(false);
+    const [showSettings, setShowSettings] = useState(true);
     
     // Calculate frame interval based on FPS
     const frameInterval = 1000 / fps; // milliseconds per frame

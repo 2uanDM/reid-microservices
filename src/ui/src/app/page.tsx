@@ -9,8 +9,8 @@ export default function Dashboard() {
   const [isConnected, setIsConnected] = useState(false);
   const [devices, setDevices] = useState<string[]>([]);
   const [frameData, setFrameData] = useState<Map<string, FrameData>>(new Map());
-  const [fps, setFps] = useState(30); // Default FPS
-  const [showGlobalSettings, setShowGlobalSettings] = useState(false);
+  const [fps, setFps] = useState(12); // Default FPS
+  const [showGlobalSettings, setShowGlobalSettings] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'reconnecting'>('disconnected');
   
   const wsRef = useRef<WebSocket | null>(null);
@@ -69,7 +69,7 @@ export default function Dashboard() {
       setConnectionStatus(reconnectAttemptsRef.current === 0 ? 'connecting' : 'reconnecting');
       console.log(`Connecting to WebSocket (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})...`);
       
-      const ws = new WebSocket("ws://quandm.myvnc.com:8765");
+      const ws = new WebSocket("ws://localhost:8765");
       wsRef.current = ws;
 
       // Set connection timeout
