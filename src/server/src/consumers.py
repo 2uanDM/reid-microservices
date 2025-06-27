@@ -638,8 +638,7 @@ class ReIdConsumer:
                     if messages:
                         await self.handle_incoming_message(messages)
                     else:
-                        logger.warning("No messages received")
-                        await asyncio.sleep(0.5)
+                        logger.info("No messages received")
             except KeyboardInterrupt:
                 logger.info("Shutting down consumer...")
             except Exception:

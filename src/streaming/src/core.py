@@ -1,8 +1,8 @@
 import asyncio
+import base64
 import io
 import json
 import os
-import time
 from collections import defaultdict, deque
 from typing import Dict, List
 
@@ -27,8 +27,8 @@ class StreamingService:
         # Kafka configuration
         self.kafka_bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
         self.output_topic_name = os.getenv("OUTPUT_TOPIC_NAME", "reid_output")
-        self.consumer_group = (
-            f"streaming_service_{int(time.time())}"  # Unique group to get all messages
+        self.consumer_group = os.getenv(
+            "STREAMING_CONSUMER_GROUP", "reid_consumer_group"
         )
 
         # WebSocket configuration
@@ -65,12 +65,22 @@ class StreamingService:
                 session_timeout_ms=30000,
                 heartbeat_interval_ms=3000,
                 max_poll_interval_ms=300000,
-                fetch_min_bytes=1024 * 1024,
-                fetch_max_bytes=100 * 1024 * 1024,
+                fetch_min_bytes=512 * 1024,  # Reduced to get messages faster
+                fetch_max_bytes=100 * 1024 * 1024,  # Increased for higher throughput
                 max_partition_fetch_bytes=100 * 1024 * 1024,
             )
 
             logger.info("Kafka Consumer for streaming initialized successfully")
+            logger.info(f"Consumer group: {self.consumer_group}")
+
+            # Log partition assignment for debugging
+            partitions = self.consumer.partitions_for_topic(self.output_topic_name)
+            if partitions:
+                logger.info(
+                    f"Available partitions for topic {self.output_topic_name}: {sorted(partitions)}"
+                )
+                logger.info("This consumer will receive messages from ALL partitions")
+
             return True
         except Exception:
             logger.error("Error initializing Kafka Consumer", exc_info=True)
@@ -179,7 +189,13 @@ class StreamingService:
 
         while self.running:
             try:
-                messages = self.consumer.poll(timeout_ms=1000, max_records=10)
+                messages = self.consumer.poll(timeout_ms=1000, max_records=30)
+
+                if messages:
+                    message_count = sum(len(msgs) for msgs in messages.values())
+                    logger.info(
+                        f"Processing {message_count} messages from {len(messages)} partitions"
+                    )
 
                 for topic_partition, msgs in messages.items():
                     for msg in msgs:
@@ -195,7 +211,6 @@ class StreamingService:
                         _, buffer = cv2.imencode(
                             ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80]
                         )
-                        import base64
 
                         image_base64 = base64.b64encode(buffer).decode("utf-8")
 
@@ -218,7 +233,7 @@ class StreamingService:
                         )
 
                 if not messages:
-                    await asyncio.sleep(0.1)  # Short sleep if no messages
+                    await asyncio.sleep(0.05)
 
             except Exception:
                 logger.error("Error in Kafka consumer loop", exc_info=True)
@@ -262,12 +277,3 @@ class StreamingService:
         if hasattr(self, "consumer"):
             self.consumer.close()
         logger.info("Streaming service stopped")
-
-
-if __name__ == "__main__":
-    service = StreamingService()
-    try:
-        asyncio.run(service.run())
-    except KeyboardInterrupt:
-        logger.info("Shutting down streaming service...")
-        service.stop()
