@@ -3,6 +3,7 @@ import concurrent.futures
 import io
 import statistics
 import time
+import traceback
 from typing import Any, Dict
 
 import httpx
@@ -55,29 +56,35 @@ class FeatureExtractionBenchmark:
         }
 
     async def test_batch_request(self, batch_size: int = 8) -> Dict[str, Any]:
-        """Test batch processing."""
+        """Test batch processing using dynamic batching."""
         images_data = [self.generate_test_image() for _ in range(batch_size)]
 
         start_time = time.perf_counter()
 
-        files = [
-            ("images", (f"test_{i}.jpg", img_data, "image/jpeg"))
-            for i, img_data in enumerate(images_data)
-        ]
-        response = await self.client.post(
-            f"{self.base_url}/embedding/batch", files=files
-        )
-        result = response.json()
+        # Send concurrent requests to trigger dynamic batching
+        tasks = []
+        for i, img_data in enumerate(images_data):
+            files = {"image": (f"test_{i}.jpg", img_data, "image/jpeg")}
+            task = self.client.post(f"{self.base_url}/embedding/batch", files=files)
+            tasks.append(task)
+
+        responses = await asyncio.gather(*tasks)
+        results = [response.json() for response in responses]
 
         end_time = time.perf_counter()
         total_time = (end_time - start_time) * 1000  # Convert to milliseconds
+
+        # Count total images processed (each response should have count=1 for individual requests)
+        total_images = sum(result["count"] for result in results)
 
         return {
             "total_time_ms": total_time,
             "batch_size": batch_size,
             "time_per_image_ms": total_time / batch_size,
-            "images_processed": result["count"],
-            "status": "success" if response.status_code == 200 else "failed",
+            "images_processed": total_images,
+            "status": "success"
+            if all(r.status_code == 200 for r in responses)
+            else "failed",
         }
 
     async def test_true_batch_request(self, batch_size: int = 8) -> Dict[str, Any]:
@@ -148,7 +155,7 @@ class FeatureExtractionBenchmark:
         print("\n1. Single Request Latency Test")
         print("-" * 40)
         single_results = []
-        for i in range(10):
+        for i in range(100):
             result = await self.test_single_request()
             single_results.append(result)
             print(f"Request {i + 1}: {result['latency_ms']:.2f}ms")
@@ -161,7 +168,7 @@ class FeatureExtractionBenchmark:
 
         print("\n2. Batch Processing Test")
         print("-" * 40)
-        for batch_size in [2, 4, 8, 16]:
+        for batch_size in [2, 4, 8, 16, 32, 64]:
             result = await self.test_batch_request(batch_size)
             print(
                 f"Batch size {batch_size}: {result['total_time_ms']:.2f}ms total, "
@@ -170,7 +177,7 @@ class FeatureExtractionBenchmark:
 
         print("\n3. True Batch Processing Test")
         print("-" * 40)
-        for batch_size in [2, 4, 8, 16]:
+        for batch_size in [2, 4, 8, 16, 32, 64]:
             result = await self.test_true_batch_request(batch_size)
             print(
                 f"True batch size {batch_size}: {result['total_time_ms']:.2f}ms total, "
@@ -179,7 +186,7 @@ class FeatureExtractionBenchmark:
 
         print("\n4. Concurrent Requests Test")
         print("-" * 40)
-        for num_concurrent in [2, 5, 10, 20]:
+        for num_concurrent in [2, 5, 10, 20, 50, 100]:
             result = await self.test_concurrent_requests(num_concurrent)
             print(
                 f"Concurrent {num_concurrent}: {result['throughput_rps']:.2f} RPS, "
@@ -188,11 +195,13 @@ class FeatureExtractionBenchmark:
 
         print("\n5. Stress Test")
         print("-" * 40)
-        stress_result = await self.test_concurrent_requests(50)
-        print(f"Stress test (50 concurrent): {stress_result['throughput_rps']:.2f} RPS")
+        stress_result = await self.test_concurrent_requests(100)
         print(
-            f"Success rate: {stress_result['successful_requests']}/50 "
-            f"({stress_result['successful_requests'] / 50 * 100:.1f}%)"
+            f"Stress test (100 concurrent): {stress_result['throughput_rps']:.2f} RPS"
+        )
+        print(
+            f"Success rate: {stress_result['successful_requests']}/100 "
+            f"({stress_result['successful_requests'] / 100 * 100:.1f}%)"
         )
         print(
             f"Latency stats: min={stress_result['min_latency_ms']:.2f}ms, "
@@ -201,7 +210,7 @@ class FeatureExtractionBenchmark:
         )
 
 
-def run_threaded_benchmark(num_threads: int = 4, requests_per_thread: int = 10):
+def run_threaded_benchmark(num_threads: int = 4, requests_per_thread: int = 100):
     """Run benchmark with multiple threads for maximum load testing."""
     print(
         f"\n6. Multi-threaded Load Test ({num_threads} threads, {requests_per_thread} requests each)"
@@ -271,4 +280,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n⏹️  Benchmark stopped by user")
     except Exception as e:
+        print(traceback.format_exc())
         print(f"\n❌ Benchmark failed: {e}")

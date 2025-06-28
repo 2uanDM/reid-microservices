@@ -200,8 +200,16 @@ class ModelService:
         """Batch endpoint - uses dynamic batching for throughput."""
         # This will trigger batching if multiple requests come simultaneously
         image_data = await image.read()
-        features = await self.extract_features_batch(image_data, model)
-        return {"features": features, "count": len(features)}
+        features_list = await self.extract_features_batch(image_data, model)
+
+        # extract_features_batch returns a list of feature vectors due to Ray Serve batching
+        # For a single request, we get back a list with one element
+        if len(features_list) == 1:
+            # Single request case
+            return {"features": features_list[0], "count": 1}
+        else:
+            # Multiple requests were batched together
+            return {"features": features_list, "count": len(features_list)}
 
     @app.post("/embedding/true-batch")
     async def embedding_true_batch(

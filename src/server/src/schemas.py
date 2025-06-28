@@ -24,6 +24,35 @@ class EdgeDeviceMessage(BaseModel):
         )  # Convert from nanoseconds to seconds
 
 
+class TrackedPerson(BaseModel):
+    """
+    Represents a tracked person with their ID and detection information
+    """
+
+    person_id: int
+    bbox: List[float]  # x1, y1, x2, y2 in xywh format
+    confidence: float
+    gender: str
+    gender_confidence: float
+
+
+class ProcessedFrameMessage(BaseModel):
+    """
+    Message sent to reid_output topic containing processed frame with tracking info
+    """
+
+    device_id: str
+    frame_number: int
+    tracked_persons: List[TrackedPerson]
+    created_at: int  # Original timestamp from edge device
+    image_data: bytes  # Frame with tracking overlays
+
+    def get_created_at_datetime(self) -> datetime:
+        return datetime.fromtimestamp(
+            self.created_at / 1_000_000_000
+        )  # Convert from nanoseconds to seconds
+
+
 class PersonMetadata(BaseModel):
     """
     Including `image`, `embedding` and `gender` for a person
