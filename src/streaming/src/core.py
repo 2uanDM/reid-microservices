@@ -253,7 +253,7 @@ class StreamingService:
                     )
 
                     # Process messages in smaller batches to allow WebSocket priority
-                    batch_size = 10  # Process 10 messages at a time
+                    batch_size = self.max_poll_records
                     processed_count = 0
 
                     for topic_partition, msgs in messages.items():
