@@ -16,7 +16,6 @@ from src.apis import ModelServiceClient
 from src.embeddings import PersonID, RedisPersonIDsStorage
 from src.schemas import EdgeDeviceMessage, PersonMetadata, ProcessedFrameMessage
 from src.trackers import BYTETracker, Namespace
-from src.utils import Logger
 from src.utils.ops import crop_image, draw_bbox, xyxy2xywh
 
 logger = Logger(__name__)
