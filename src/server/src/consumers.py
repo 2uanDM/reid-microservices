@@ -49,8 +49,9 @@ class ReIdConsumer:
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis_port = int(os.getenv("REDIS_PORT", 6379))
         self.redis_db = int(os.getenv("REDIS_DB", 0))
-        self.similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.7))
-        self.gender_threshold = float(os.getenv("GENDER_THRESHOLD", 0.9))
+        self.similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.6))
+        self.gender_threshold = float(os.getenv("GENDER_THRESHOLD", 1))
+        self.detection_threshold = float(os.getenv("DETECTION_THRESHOLD", 0.8))
 
         # Load input schema for consuming from reid_input topic
         with open("src/configs/input.avsc", "r") as f:
@@ -80,7 +81,7 @@ class ReIdConsumer:
                 track_low_thresh=0.35,  # second association threshold
                 match_thresh=0.3,  # matching threshold for linear assignment
                 fuse_score=True,  # whether to fuse confidence scores with the iou distances before matching
-                new_track_thresh=0.82,  # threshold for init new track if the detection does not match any tracks
+                new_track_thresh=0.83,  # threshold for init new track if the detection does not match any tracks
             )
         )
 
@@ -329,11 +330,13 @@ class ReIdConsumer:
                             if (
                                 person_metadata.gender_confidence
                                 > self.gender_threshold
+                                and person_metadata.body_conf > self.detection_threshold
                             ):
                                 # Search for similar person in database with gender filtering
                                 matched_person, similarity = self.person_storage.search(
                                     current_person_id=current_person,
-                                    current_frame_id=track_ids,  # Exclude current frame IDs from search
+                                    current_frame_ids=track_ids,  # Exclude current frame IDs from search
+                                    detection_confs=detection_confs,  # And the detection score of current frame IDs must > threshold
                                     threshold=self.similarity_threshold,
                                 )
 
@@ -341,13 +344,14 @@ class ReIdConsumer:
                                 # Search without gender filtering when gender confidence is low
                                 matched_person, similarity = self.person_storage.search(
                                     current_person_id=current_person,
-                                    current_frame_id=track_ids,  # Exclude current frame IDs from search
+                                    current_frame_ids=track_ids,  # Exclude current frame IDs from search
+                                    detection_confs=detection_confs,  # And the detection score of current frame IDs must > threshold
                                     threshold=self.similarity_threshold,
                                 )
 
                             if matched_person is not None:
                                 logger.info(
-                                    f"RE-IDENTIFIED! Track ID {track_id} → Person ID {matched_person.id}"
+                                    f"[{decoded_message.device_id.upper()}] RE-IDENTIFIED! Track ID {track_id} → Person ID {matched_person.id}"
                                 )
 
                                 # Update the matched person with new embedding

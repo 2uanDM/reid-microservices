@@ -219,7 +219,8 @@ class RedisPersonIDsStorage:
     def search(
         self,
         current_person_id: PersonID,
-        current_frame_id: list,
+        current_frame_ids: list,
+        detection_confs: list,
         threshold: float = 0.8,
     ) -> Tuple[Optional[PersonID], float]:
         """
@@ -230,6 +231,9 @@ class RedisPersonIDsStorage:
         Args:
             current_person_id: The person to find matches for
             current_frame_id: List of IDs to exclude from search (current frame)
+            detection_conf: List of detection confidence scores of current frame IDs
+                Some times, the detection confidence score of some person in current frame is not high enough,
+                so we only filter out the persons on current frame IDs with enough high detection confidence score.
             threshold: Similarity threshold (-1 to 1, where 1 is identical)
 
         Returns:
@@ -237,6 +241,12 @@ class RedisPersonIDsStorage:
         """
         best_match = None
         best_similarity = -1.0  # Start with worst similarity
+
+        reliable_ids = [
+            current_frame_ids[i]
+            for i in range(len(current_frame_ids))
+            if detection_confs[i] > float(os.getenv("DETECTION_THRESHOLD", 0.8))
+        ]
 
         current_embedding = current_person_id.get_embedding_for_comparison()
         if current_embedding is None:
@@ -251,7 +261,7 @@ class RedisPersonIDsStorage:
             person_id_value = int(person_key.replace(self.prefix, ""))
 
             # Skip persons that are in the current frame
-            if person_id_value in current_frame_id:
+            if person_id_value in reliable_ids:
                 continue
 
             # Get person data from Redis
