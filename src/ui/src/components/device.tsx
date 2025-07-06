@@ -117,7 +117,7 @@ export function DeviceStream({
         // Draw the image
         ctx.drawImage(img, 0, 0);
       };
-      img.src = `data:image/webp;base64,${frame.image_base64}`;
+      img.src = `data:image/jpeg;base64,${frame.image_base64}`;
     }, []);
     
     useEffect(() => {

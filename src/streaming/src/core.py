@@ -3,6 +3,8 @@ import base64
 import io
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 import avro.schema
@@ -14,6 +16,8 @@ from dotenv import load_dotenv
 from websockets.server import WebSocketServerProtocol
 
 from kafka import KafkaConsumer
+from kafka.consumer.fetcher import ConsumerRecord
+from kafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from src.utils import Logger
 
 load_dotenv()
@@ -35,9 +39,7 @@ class StreamingService:
         self.websocket_port = int(os.getenv("WEBSOCKET_PORT", 8765))
 
         # Max messages to process in one poll
-        self.max_poll_records = int(
-            os.getenv("MAX_POLL_RECORDS", 50)
-        )  # Reduced for better responsiveness
+        self.max_poll_records = int(os.getenv("MAX_POLL_RECORDS", 100))
 
         # Load output schema
         with open("src/configs/output.avsc", "r") as f:
@@ -56,9 +58,9 @@ class StreamingService:
 
         # Threading control
         self.running = False
-
-        # Priority queue for WebSocket operations
-        self.websocket_queue = asyncio.Queue(maxsize=1000)
+        self.executor = ThreadPoolExecutor(
+            max_workers=10
+        )  # Decode and compress in parallel
 
         # Task references for better control
         self.websocket_task = None
@@ -73,13 +75,14 @@ class StreamingService:
                 auto_offset_reset="latest",  # Only get new messages
                 enable_auto_commit=True,
                 group_id=self.consumer_group,
+                partition_assignment_strategy=[RoundRobinPartitionAssignor],
                 value_deserializer=self._decode_message,
                 session_timeout_ms=30000,
                 heartbeat_interval_ms=3000,
                 max_poll_interval_ms=300000,
                 fetch_min_bytes=512 * 1024,  # Reduced to get messages faster
-                fetch_max_bytes=100 * 1024 * 1024,  # Increased for higher throughput
-                max_partition_fetch_bytes=100 * 1024 * 1024,
+                fetch_max_bytes=10 * 1024 * 1024,  # Increased for higher throughput
+                max_partition_fetch_bytes=10 * 1024 * 1024,
             )
 
             logger.info("Kafka Consumer for streaming initialized successfully")
@@ -194,7 +197,7 @@ class StreamingService:
         disconnected_clients = []
 
         # Increased semaphore for WebSocket priority
-        async with asyncio.Semaphore(20):  # Increased for better WebSocket performance
+        async with asyncio.Semaphore(10):  # Increased for better WebSocket performance
             send_tasks = []
             for websocket in self.websocket_connections:
                 # Create priority send tasks
@@ -232,6 +235,32 @@ class StreamingService:
             )
             raise  # Re-raise to mark for disconnection
 
+    def preprocess_single_msg(
+        self, idx: int, msg: ConsumerRecord
+    ) -> tuple[int, str, dict]:
+        """Preprocess a single message. Return the frame data and device id"""
+        processed_frame = msg.value
+        device_id = processed_frame["device_id"]
+
+        # Convert image bytes back to numpy array and then to base64
+        image_bytes = processed_frame["image_data"]
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # Convert to base64 for web transmission
+        _, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 40])
+        image_base64 = base64.b64encode(buffer).decode("utf-8")
+
+        # Store frame data
+        frame_data = {
+            "frame_number": processed_frame["frame_number"],
+            "tracked_persons": processed_frame["tracked_persons"],
+            "created_at": processed_frame["created_at"],
+            "image_base64": image_base64,
+        }
+
+        return idx, device_id, frame_data
+
     async def kafka_consumer_loop(self):
         """Main loop to consume from Kafka with WebSocket priority"""
         logger.info("Starting Kafka consumer loop with WebSocket priority...")
@@ -239,7 +268,7 @@ class StreamingService:
         while self.running:
             try:
                 # Yield control to allow WebSocket operations to run first
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.1)
 
                 messages = self.consumer.poll(
                     timeout_ms=1000,  # Reduced timeout for better responsiveness
@@ -256,48 +285,39 @@ class StreamingService:
                     batch_size = self.max_poll_records
                     processed_count = 0
 
-                    for topic_partition, msgs in messages.items():
-                        for msg in msgs:
-                            processed_frame = msg.value
-                            device_id = processed_frame["device_id"]
+                    futures = []
+                    output = {}  # {device_id: [idx, frame_data]}
 
-                            # Convert image bytes back to numpy array and then to base64
-                            image_bytes = processed_frame["image_data"]
-                            nparr = np.frombuffer(image_bytes, np.uint8)
-                            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                            # Convert to base64 for web transmission
-                            _, buffer = cv2.imencode(
-                                ".jpg",
-                                image,
-                                [
-                                    cv2.IMWRITE_JPEG_QUALITY,
-                                    75,
-                                ],  # Reduced quality for faster processing
+                    # Submit all messages of all partitions to the executor
+                    start_time = time.time()
+                    for _, partition_data in messages.items():
+                        for idx, msg in enumerate(partition_data):
+                            futures.append(
+                                self.executor.submit(
+                                    self.preprocess_single_msg, idx, msg
+                                )
                             )
 
-                            image_base64 = base64.b64encode(buffer).decode("utf-8")
+                    # Wait for all tasks to complete
+                    for future in as_completed(futures):
+                        idx, device_id, frame_data = future.result()
+                        if device_id not in output:
+                            output[device_id] = []
+                        output[device_id].append((idx, frame_data))
 
-                            # Store frame data
-                            frame_data = {
-                                "frame_number": processed_frame["frame_number"],
-                                "tracked_persons": processed_frame["tracked_persons"],
-                                "created_at": processed_frame["created_at"],
-                                "image_base64": image_base64,
-                            }
+                    end_time = time.time()
+                    print(f"Time taken: {end_time - start_time} seconds")
 
+                    for device_id, frame_data in output.items():
+                        frame_data.sort(key=lambda x: x[0])
+                        for idx, frame_data in frame_data:
                             self.device_frames[device_id] = frame_data
-
-                            # Broadcast update to WebSocket clients with priority
                             await self.broadcast_frame_update(device_id)
-
                             processed_count += 1
-
                             # Yield control every batch_size messages to prioritize WebSocket operations
                             if processed_count % batch_size == 0:
-                                await asyncio.sleep(
-                                    0
-                                )  # Allow WebSocket operations to run
+                                # Allow WebSocket operations to run
+                                await asyncio.sleep(0.1)
 
                 if not messages:
                     # Longer sleep when no messages, but still yield frequently for WebSocket priority
@@ -365,18 +385,14 @@ class StreamingService:
 
         # Cancel Kafka task first to stop consuming messages
         if self.kafka_task and not self.kafka_task.done():
-            logger.info("Cancelling Kafka consumer task...")
             self.kafka_task.cancel()
             try:
                 await self.kafka_task
             except asyncio.CancelledError:
-                logger.info("Kafka consumer task cancelled successfully")
+                pass
 
         # Close WebSocket connections gracefully
         if self.websocket_connections:
-            logger.info(
-                f"Closing {len(self.websocket_connections)} WebSocket connections..."
-            )
             close_tasks = []
             for websocket in self.websocket_connections.copy():
                 close_tasks.append(
@@ -387,7 +403,6 @@ class StreamingService:
 
             if close_tasks:
                 await asyncio.gather(*close_tasks, return_exceptions=True)
-
             self.websocket_connections.clear()
 
         # Cancel WebSocket server task last

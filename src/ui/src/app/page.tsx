@@ -69,7 +69,8 @@ export default function Dashboard() {
       setConnectionStatus(reconnectAttemptsRef.current === 0 ? 'connecting' : 'reconnecting');
       console.log(`Connecting to WebSocket (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})...`);
       
-      const ws = new WebSocket("ws://quandm.myvnc.com:8765");
+      // const ws = new WebSocket("ws://quandm.myvnc.com:8765");
+      const ws = new WebSocket("wss://socket.vongtronxanh.site/");
       wsRef.current = ws;
 
       // Set connection timeout
