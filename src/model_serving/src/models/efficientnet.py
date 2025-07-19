@@ -5,14 +5,14 @@ from efficientnet_pytorch import EfficientNet
 class GenderClassificationModel:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = EfficientNet.from_pretrained("efficientnet-b0")
+        self.model = EfficientNet.from_pretrained("efficientnet-b4")
 
         # Gender classification setup
         num_classes = 2
         self.model._fc = torch.nn.Linear(self.model._fc.in_features, num_classes)
         self.model.load_state_dict(
             torch.load(
-                "src/assets/models/efficientnet/best_model.pth",
+                "src/assets/models/efficientnet/efficientnet-b4.pth",
                 map_location=self.device,
             )
         )
